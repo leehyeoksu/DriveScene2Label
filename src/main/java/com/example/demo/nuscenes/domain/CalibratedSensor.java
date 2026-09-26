@@ -1,0 +1,26 @@
+package com.example.demo.nuscenes.domain;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.relational.core.mapping.Table;
+@Table("calibrated_sensor")
+public record CalibratedSensor(
+    @Id Long id,
+    Long datasetId,
+    String token,
+    String sensorToken,
+    Double translationX,
+    Double translationY,
+    Double translationZ,
+    Double rotationW,
+    Double rotationX,
+    Double rotationY,
+    Double rotationZ,
+    Double intrinsic00,
+    Double intrinsic01,
+    Double intrinsic02,
+    Double intrinsic10,
+    Double intrinsic11,
+    Double intrinsic12,
+    Double intrinsic20,
+    Double intrinsic21,
+    Double intrinsic22
+) {}

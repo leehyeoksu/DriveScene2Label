@@ -1,0 +1,11 @@
+[
+  {
+    "token": "scene-1",
+    "log_token": "log-1",
+    "name": "scene-test",
+    "description": "Synthetic test fixture",
+    "nbr_samples": 1,
+    "first_sample_token": "sample-1",
+    "last_sample_token": "sample-1"
+  }
+]

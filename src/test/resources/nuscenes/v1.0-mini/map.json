@@ -1,0 +1,11 @@
+[
+  {
+    "token": "map-1",
+    "filename": "maps/test.png",
+    "category": "semantic_prior",
+    "log_tokens": [
+      "log-1",
+      "outside-mini"
+    ]
+  }
+]

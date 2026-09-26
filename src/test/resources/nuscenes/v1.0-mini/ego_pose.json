@@ -1,0 +1,107 @@
+[
+  {
+    "token": "pose-0",
+    "timestamp": 1532402927647951,
+    "translation": [
+      100,
+      200,
+      0
+    ],
+    "rotation": [
+      1,
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "token": "pose-1",
+    "timestamp": 1532402927647952,
+    "translation": [
+      100,
+      200,
+      0
+    ],
+    "rotation": [
+      1,
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "token": "pose-2",
+    "timestamp": 1532402927647953,
+    "translation": [
+      100,
+      200,
+      0
+    ],
+    "rotation": [
+      1,
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "token": "pose-3",
+    "timestamp": 1532402927647954,
+    "translation": [
+      100,
+      200,
+      0
+    ],
+    "rotation": [
+      1,
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "token": "pose-4",
+    "timestamp": 1532402927647955,
+    "translation": [
+      100,
+      200,
+      0
+    ],
+    "rotation": [
+      1,
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "token": "pose-5",
+    "timestamp": 1532402927647956,
+    "translation": [
+      100,
+      200,
+      0
+    ],
+    "rotation": [
+      1,
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "token": "pose-6",
+    "timestamp": 1532402927647957,
+    "translation": [
+      100,
+      200,
+      0
+    ],
+    "rotation": [
+      1,
+      0,
+      0,
+      0
+    ]
+  }
+]

@@ -1,0 +1,210 @@
+[
+  {
+    "token": "calibration-0",
+    "sensor_token": "sensor-0",
+    "translation": [
+      0,
+      0,
+      1
+    ],
+    "rotation": [
+      1,
+      0,
+      0,
+      0
+    ],
+    "camera_intrinsic": [
+      [
+        1000,
+        0,
+        800
+      ],
+      [
+        0,
+        1000,
+        450
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ]
+  },
+  {
+    "token": "calibration-1",
+    "sensor_token": "sensor-1",
+    "translation": [
+      0,
+      0,
+      1
+    ],
+    "rotation": [
+      1,
+      0,
+      0,
+      0
+    ],
+    "camera_intrinsic": [
+      [
+        1000,
+        0,
+        800
+      ],
+      [
+        0,
+        1000,
+        450
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ]
+  },
+  {
+    "token": "calibration-2",
+    "sensor_token": "sensor-2",
+    "translation": [
+      0,
+      0,
+      1
+    ],
+    "rotation": [
+      1,
+      0,
+      0,
+      0
+    ],
+    "camera_intrinsic": [
+      [
+        1000,
+        0,
+        800
+      ],
+      [
+        0,
+        1000,
+        450
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ]
+  },
+  {
+    "token": "calibration-3",
+    "sensor_token": "sensor-3",
+    "translation": [
+      0,
+      0,
+      1
+    ],
+    "rotation": [
+      1,
+      0,
+      0,
+      0
+    ],
+    "camera_intrinsic": [
+      [
+        1000,
+        0,
+        800
+      ],
+      [
+        0,
+        1000,
+        450
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ]
+  },
+  {
+    "token": "calibration-4",
+    "sensor_token": "sensor-4",
+    "translation": [
+      0,
+      0,
+      1
+    ],
+    "rotation": [
+      1,
+      0,
+      0,
+      0
+    ],
+    "camera_intrinsic": [
+      [
+        1000,
+        0,
+        800
+      ],
+      [
+        0,
+        1000,
+        450
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ]
+  },
+  {
+    "token": "calibration-5",
+    "sensor_token": "sensor-5",
+    "translation": [
+      0,
+      0,
+      1
+    ],
+    "rotation": [
+      1,
+      0,
+      0,
+      0
+    ],
+    "camera_intrinsic": [
+      [
+        1000,
+        0,
+        800
+      ],
+      [
+        0,
+        1000,
+        450
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ]
+  },
+  {
+    "token": "calibration-6",
+    "sensor_token": "sensor-6",
+    "translation": [
+      0,
+      0,
+      1
+    ],
+    "rotation": [
+      1,
+      0,
+      0,
+      0
+    ],
+    "camera_intrinsic": []
+  }
+]

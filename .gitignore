@@ -1,0 +1,87 @@
+HELP.md
+.gradle
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+### VS Code ###
+.vscode/
+
+# Local database, secrets and Windows download metadata
+.local/
+.env
+*:Zone.Identifier
+
+# Dataset roots and generated auto-labeling results (never commit nuScenes)
+/data/
+/datasets/
+/samples/
+/sweeps/
+/maps/
+/v1.0-*/
+/output/
+/outputs/
+/out_labels/
+/#out_labels/
+/checkpoints/
+/weights/
+**/01_*/
+**/02_*/
+**/03_*/
+**/04_*/
+**/05_*/
+**/06_*/
+**/07_*/
+
+# Sensor media, intermediate arrays, trained weights and archives
+*.jpg
+*.jpeg
+*.png
+*.pcd
+*.bin
+*.npz
+*.npy
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.zip
+*.tar
+*.tgz
+*.gz
+*.7z
+*.log
+.env.*
+!.env.example
+__pycache__/
+*.pyc

@@ -1,0 +1,103 @@
+package com.example.demo.nuscenes.importer;
+import java.util.List;
+final class ImportSchema {
+ enum Kind { TEXT, LONG, INT, DOUBLE, BOOL }
+ record Field(String column, String pointer, Kind kind) {}
+ record TableSpec(String table, String source, List<Field> fields) {}
+ static final List<TableSpec> TABLES = List.of(
+new TableSpec("capture_log", "log", List.of(
+    new Field("logfile", "/logfile", Kind.TEXT),
+    new Field("location", "/location", Kind.TEXT),
+    new Field("date_captured", "/date_captured", Kind.TEXT),
+    new Field("vehicle", "/vehicle", Kind.TEXT))),
+new TableSpec("map_asset", "map", List.of(
+    new Field("relative_path", "/filename", Kind.TEXT),
+    new Field("category", "/category", Kind.TEXT))),
+new TableSpec("scene", "scene", List.of(
+    new Field("log_token", "/log_token", Kind.TEXT),
+    new Field("name", "/name", Kind.TEXT),
+    new Field("description", "/description", Kind.TEXT),
+    new Field("nbr_samples", "/nbr_samples", Kind.INT),
+    new Field("first_sample_token", "/first_sample_token", Kind.TEXT),
+    new Field("last_sample_token", "/last_sample_token", Kind.TEXT))),
+new TableSpec("sample", "sample", List.of(
+    new Field("scene_token", "/scene_token", Kind.TEXT),
+    new Field("timestamp_us", "/timestamp", Kind.LONG),
+    new Field("prev_token", "/prev", Kind.TEXT),
+    new Field("next_token", "/next", Kind.TEXT))),
+new TableSpec("sensor", "sensor", List.of(
+    new Field("channel", "/channel", Kind.TEXT),
+    new Field("modality", "/modality", Kind.TEXT))),
+new TableSpec("calibrated_sensor", "calibrated_sensor", List.of(
+    new Field("sensor_token", "/sensor_token", Kind.TEXT),
+    new Field("translation_x", "/translation/0", Kind.DOUBLE),
+    new Field("translation_y", "/translation/1", Kind.DOUBLE),
+    new Field("translation_z", "/translation/2", Kind.DOUBLE),
+    new Field("rotation_w", "/rotation/0", Kind.DOUBLE),
+    new Field("rotation_x", "/rotation/1", Kind.DOUBLE),
+    new Field("rotation_y", "/rotation/2", Kind.DOUBLE),
+    new Field("rotation_z", "/rotation/3", Kind.DOUBLE),
+    new Field("intrinsic00", "/camera_intrinsic/0/0", Kind.DOUBLE),
+    new Field("intrinsic01", "/camera_intrinsic/0/1", Kind.DOUBLE),
+    new Field("intrinsic02", "/camera_intrinsic/0/2", Kind.DOUBLE),
+    new Field("intrinsic10", "/camera_intrinsic/1/0", Kind.DOUBLE),
+    new Field("intrinsic11", "/camera_intrinsic/1/1", Kind.DOUBLE),
+    new Field("intrinsic12", "/camera_intrinsic/1/2", Kind.DOUBLE),
+    new Field("intrinsic20", "/camera_intrinsic/2/0", Kind.DOUBLE),
+    new Field("intrinsic21", "/camera_intrinsic/2/1", Kind.DOUBLE),
+    new Field("intrinsic22", "/camera_intrinsic/2/2", Kind.DOUBLE))),
+new TableSpec("ego_pose", "ego_pose", List.of(
+    new Field("timestamp_us", "/timestamp", Kind.LONG),
+    new Field("translation_x", "/translation/0", Kind.DOUBLE),
+    new Field("translation_y", "/translation/1", Kind.DOUBLE),
+    new Field("translation_z", "/translation/2", Kind.DOUBLE),
+    new Field("rotation_w", "/rotation/0", Kind.DOUBLE),
+    new Field("rotation_x", "/rotation/1", Kind.DOUBLE),
+    new Field("rotation_y", "/rotation/2", Kind.DOUBLE),
+    new Field("rotation_z", "/rotation/3", Kind.DOUBLE))),
+new TableSpec("sample_data", "sample_data", List.of(
+    new Field("sample_token", "/sample_token", Kind.TEXT),
+    new Field("ego_pose_token", "/ego_pose_token", Kind.TEXT),
+    new Field("calibrated_sensor_token", "/calibrated_sensor_token", Kind.TEXT),
+    new Field("relative_path", "/filename", Kind.TEXT),
+    new Field("fileformat", "/fileformat", Kind.TEXT),
+    new Field("timestamp_us", "/timestamp", Kind.LONG),
+    new Field("is_key_frame", "/is_key_frame", Kind.BOOL),
+    new Field("width", "/width", Kind.INT),
+    new Field("height", "/height", Kind.INT),
+    new Field("prev_token", "/prev", Kind.TEXT),
+    new Field("next_token", "/next", Kind.TEXT))),
+new TableSpec("category", "category", List.of(
+    new Field("name", "/name", Kind.TEXT),
+    new Field("description", "/description", Kind.TEXT))),
+new TableSpec("object_instance", "instance", List.of(
+    new Field("category_token", "/category_token", Kind.TEXT),
+    new Field("nbr_annotations", "/nbr_annotations", Kind.INT),
+    new Field("first_annotation_token", "/first_annotation_token", Kind.TEXT),
+    new Field("last_annotation_token", "/last_annotation_token", Kind.TEXT))),
+new TableSpec("visibility", "visibility", List.of(
+    new Field("level", "/level", Kind.TEXT),
+    new Field("description", "/description", Kind.TEXT))),
+new TableSpec("attribute", "attribute", List.of(
+    new Field("name", "/name", Kind.TEXT),
+    new Field("description", "/description", Kind.TEXT))),
+new TableSpec("gt_annotation", "sample_annotation", List.of(
+    new Field("sample_token", "/sample_token", Kind.TEXT),
+    new Field("instance_token", "/instance_token", Kind.TEXT),
+    new Field("visibility_token", "/visibility_token", Kind.TEXT),
+    new Field("center_x", "/translation/0", Kind.DOUBLE),
+    new Field("center_y", "/translation/1", Kind.DOUBLE),
+    new Field("center_z", "/translation/2", Kind.DOUBLE),
+    new Field("size_w", "/size/0", Kind.DOUBLE),
+    new Field("size_l", "/size/1", Kind.DOUBLE),
+    new Field("size_h", "/size/2", Kind.DOUBLE),
+    new Field("rotation_w", "/rotation/0", Kind.DOUBLE),
+    new Field("rotation_x", "/rotation/1", Kind.DOUBLE),
+    new Field("rotation_y", "/rotation/2", Kind.DOUBLE),
+    new Field("rotation_z", "/rotation/3", Kind.DOUBLE),
+    new Field("num_lidar_pts", "/num_lidar_pts", Kind.INT),
+    new Field("num_radar_pts", "/num_radar_pts", Kind.INT),
+    new Field("prev_token", "/prev", Kind.TEXT),
+    new Field("next_token", "/next", Kind.TEXT))));
+ private ImportSchema() {}
+}

@@ -1,0 +1,9 @@
+[
+  {
+    "token": "log-1",
+    "logfile": "fixture",
+    "location": "test-location",
+    "date_captured": "2026-09-26",
+    "vehicle": "test-car"
+  }
+]

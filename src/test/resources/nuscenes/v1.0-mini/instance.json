@@ -1,0 +1,9 @@
+[
+  {
+    "token": "instance-1",
+    "category_token": "category-1",
+    "nbr_annotations": 1,
+    "first_annotation_token": "box-1",
+    "last_annotation_token": "box-1"
+  }
+]
