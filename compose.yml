@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-drivescene}
+      POSTGRES_USER: ${POSTGRES_USER:-drivescene}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:-drivescene}
+      DB_USERNAME: ${POSTGRES_USER:-drivescene}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      SERVER_ADDRESS: 0.0.0.0
+      SERVER_PORT: "8080"
+      NUSCENES_ROOT: /data/nuscenes
+      NUSCENES_VERSION: ${NUSCENES_VERSION:-v1.0-mini}
+      NUSCENES_IMPORT_ENABLED: "false"
+    ports:
+      - "127.0.0.1:${APP_PORT:-8080}:8080"
+    volumes:
+      - type: bind
+        source: ${NUSCENES_HOST_PATH:-/home/hyuksu/Cap_Project_Data/v1.0-mini}
+        target: /data/nuscenes
+        read_only: true
+        bind:
+          create_host_path: false
+
+volumes:
+  postgres_data:

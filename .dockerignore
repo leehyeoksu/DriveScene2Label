@@ -1,0 +1,13 @@
+# Allow only build inputs; exclude local databases, credentials and datasets.
+**
+!Dockerfile
+!.dockerignore
+!gradlew
+!build.gradle
+!settings.gradle
+!gradle/
+!gradle/**
+!src/
+!src/main/
+!src/main/**
+**/*Zone.Identifier

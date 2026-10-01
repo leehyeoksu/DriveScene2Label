@@ -143,3 +143,111 @@ bash scripts/run-local.sh test
 소스 코드, Gradle 설정·Wrapper, SQL, 실행 스크립트, 문서, 작은 가상 JSON 테스트 데이터만 저장합니다.
 nuScenes 원본 데이터, 사진·점군, 로컬 PostgreSQL 데이터와 비밀번호, 모델 가중치, 중간·최종 출력, 빌드 결과는 제외합니다.
 테스트에 필요한 가상 센서 파일은 테스트 실행 시 임시 폴더에 생성하므로 사진이나 LiDAR 바이너리를 Git에 올리지 않습니다.
+
+## Docker로 실행하기 (Ubuntu / WSL)
+
+기존 로컬 실행 방식도 계속 사용할 수 있습니다. Docker에서는 `app`(Spring Boot)과 `db`(PostgreSQL 16)를 실행합니다.
+Docker DB는 기존 `.local/postgres`와 별개이므로 최초 한 번 import가 필요합니다. 기존 DB를 자동으로 복사하지 않습니다.
+
+### 준비 및 최초 실행
+
+Docker Engine과 Compose v2가 필요합니다. Windows에서는 Docker Desktop을 실행하고
+Settings → Resources → WSL Integration에서 Ubuntu 연동을 켠 다음 **Ubuntu 터미널**의 프로젝트 폴더에서 실행하세요.
+`docker version`에 Client와 Server가 모두 나오고 `docker compose version`이 성공해야 합니다.
+
+```bash
+# 최초 한 번만 복사하고 .env를 편집합니다.
+cp .env.example .env
+# POSTGRES_PASSWORD를 개발용 비밀번호로 변경합니다.
+# NUSCENES_HOST_PATH를 실제 데이터 폴더의 절대경로로 지정합니다.
+
+docker compose build
+docker compose up -d db
+docker compose run --rm app --spring.main.web-application-type=none --nuscenes.import.enabled=true
+docker compose up app
+```
+
+데이터 루트 아래에 `samples/`, `sweeps/`, `maps/`, `v1.0-mini/`가 있어야 합니다.
+원본 폴더는 컨테이너의 `/data/nuscenes`에 읽기 전용으로 연결됩니다.
+경로가 없으면 빈 폴더를 자동 생성하지 않고 오류를 반환합니다.
+앱은 UID 10001의 일반 사용자로 실행하므로 원본 폴더를 탐색하고 파일을 읽을 권한이 필요합니다.
+
+이미 로컬 Spring 서버가 8080을 사용 중이면 해당 서버를 종료하거나 `.env`의 `APP_PORT=8081`로 변경하세요.
+포트를 바꾸면 아래 API 주소도 해당 포트로 바꿉니다. Docker DB는 호스트 포트를 열지 않으므로 기존 DB의 55432와 충돌하지 않습니다.
+
+최초 import 이후 일반 실행은 다음 한 줄입니다.
+
+```bash
+docker compose up --build
+```
+
+DB healthcheck 성공 후 Spring이 시작되고 기존 Flyway SQL로 테이블을 준비합니다.
+일반 실행은 import를 수행하지 않으므로 새 DB에서 import 전 `/api/datasets` 응답은 `[]`입니다.
+import가 성공하면 데이터셋 JSON이 반환됩니다. 같은 원본 데이터로 import를 반복해도 중복 등록되지 않습니다.
+
+### API와 로그 확인
+
+별도 Ubuntu 터미널에서 실행합니다.
+
+```bash
+curl --fail http://localhost:8080/api/datasets
+# 위 응답에서 확인한 id를 사용하세요. 아래는 id=1인 경우입니다.
+curl --fail http://localhost:8080/api/datasets/1/stats
+docker compose ps
+docker compose logs --tail=100 app db
+```
+
+mini 전체 import의 예상 개수는 scene 10, sample 404, sample_data 31,206, gt_annotation 18,538, map_asset 4입니다.
+파일 응답까지 확인하려면 scene → sample 조회 후 반환된 `contentUrl`을 요청하세요.
+Windows 브라우저 접근은 Docker Desktop의 포트 전달 상태에 따라 확인해야 합니다.
+
+Docker DB에서 SQL을 확인할 때는 기존 로컬 전용 `db-shell.sh` 대신 다음을 사용합니다.
+
+```bash
+docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```
+
+### 종료와 데이터 보존
+
+```bash
+docker compose down
+```
+
+컨테이너와 네트워크를 정리해도 `postgres_data` named volume에 DB가 남습니다.
+Compose는 프로젝트 이름을 접두사로 붙여 volume을 관리합니다.
+
+**아래 명령은 PostgreSQL 데이터까지 완전히 삭제합니다. 다시 실행하면 import부터 해야 합니다.**
+호스트에 보관한 nuScenes 원본 파일은 삭제되지 않습니다.
+
+```bash
+docker compose down -v
+```
+
+`.env`의 DB 이름·사용자·비밀번호는 새 DB volume을 초기화할 때 사용합니다.
+기존 volume이 있다면 `.env`의 비밀번호만 변경해도 DB 비밀번호가 자동 변경되지는 않습니다.
+
+### 추가한 파일과 동작 원리
+
+| 파일 | 역할 |
+|---|---|
+| `Dockerfile` | JDK 21과 Gradle Wrapper로 bootJar를 만들고, Java 21 JRE 이미지에 실행 JAR만 복사 |
+| `compose.yml` | app/db 연결, DB healthcheck, 포트, 환경변수와 volume 설정 |
+| `.dockerignore` | 빌드 입력만 허용하여 로컬 DB·비밀번호·원본 데이터가 빌드 컨텍스트에 들어가지 않도록 제한 |
+| `.env.example` | 비밀번호·원본 경로·포트 설정 예시. 복사한 실제 `.env`는 기존 `.gitignore`에서 제외 |
+
+- **이미지**는 실행에 필요한 파일을 담은 묶음이고, **컨테이너**는 그 이미지로 실행한 프로세스 환경입니다.
+- 두 컨테이너는 Compose 내부 네트워크에서 통신합니다. 앱의 DB 주소는 `jdbc:postgresql://db:5432/drivescene`입니다.
+  `db`는 PostgreSQL 서비스 이름입니다. 앱 안의 `localhost`는 앱 컨테이너 자신을 가리킵니다.
+- 앱은 컨테이너 내부에서 `0.0.0.0:8080`으로 요청을 받고, 호스트에는 기본 `127.0.0.1:8080`으로 공개합니다.
+- nuScenes는 크고 이미 호스트에 있으므로 이미지에 복사하지 않고 읽기 전용 bind mount로 연결합니다.
+  DB에는 기존처럼 메타데이터와 상대경로만 저장합니다.
+- PostgreSQL의 `/var/lib/postgresql/data`는 named volume에 연결하여 컨테이너를 교체해도 DB를 유지합니다.
+- Dockerfile의 `ENTRYPOINT`가 `java -jar /app/app.jar`이므로 `compose run ... app` 뒤 옵션은 Spring에 전달됩니다.
+  import 명령은 웹 서버 없이 실행하고 완료 후 종료합니다.
+- Flyway SQL, Spring 설정·API·import 코드, 기존 로컬 실행 스크립트는 변경하지 않았습니다.
+- 이미지 빌드는 DB가 필요한 통합 테스트를 실행하지 않습니다. 기존 회귀 테스트는 로컬 DB를 준비한 뒤
+  `bash scripts/run-local.sh test`로 실행합니다.
+
+참고: [Docker Compose 시작 순서](https://docs.docker.com/compose/how-tos/startup-order/),
+[Compose 서비스 설정](https://docs.docker.com/reference/compose-file/services/),
+[PostgreSQL 공식 이미지](https://hub.docker.com/_/postgres).
