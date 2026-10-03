@@ -1,0 +1,78 @@
+"""Model- and DB-free checks for the preprocessing in embed_images.py. Run: python -m pytest embedding"""
+import os
+
+import open_clip
+import pytest
+import torch
+from PIL import Image
+
+import embed_images as ei
+
+
+def random_image(w: int, h: int) -> Image.Image:
+    return Image.frombytes("RGB", (w, h), os.urandom(w * h * 3))
+
+
+def eval_transform(resize_mode: str | None = None):
+    """open_clip's eval transform for the embedder's model, built from its configs without loading weights.
+    resize_mode="squash" resizes straight to 224x224, i.e. the same pipeline with the center crop turned off."""
+    cfg = open_clip.get_pretrained_cfg(ei.MODEL_NAME, ei.PRETRAINED)
+    size = open_clip.get_model_config(ei.MODEL_NAME)["vision_cfg"]["image_size"]
+    return open_clip.image_transform(size, is_train=False, mean=cfg["mean"], std=cfg["std"],
+                                     interpolation=cfg["interpolation"], resize_mode=resize_mode or cfg["resize_mode"])
+
+
+def column(img: Image.Image, x: int) -> bytes:
+    return img.crop((x, 0, x + 1, img.height)).tobytes()
+
+
+def test_landscape_splits_into_left_and_right_squares():
+    img = random_image(1600, 900)
+    left, right = ei.square_crops(img)
+    assert left.size == right.size == (900, 900)
+    assert column(left, 0) == column(img, 0)
+    assert column(right, 899) == column(img, 1599)
+    assert left.tobytes() == img.crop((0, 0, 900, 900)).tobytes()
+    assert right.tobytes() == img.crop((700, 0, 1600, 900)).tobytes()
+
+
+def test_square_image_stays_single():
+    img = random_image(900, 900)
+    crops = ei.square_crops(img)
+    assert len(crops) == 1 and crops[0] is img
+
+
+def test_center_crop_mode_keeps_whole_image():
+    img = random_image(1600, 900)
+    assert ei.image_crops(img, ei.CENTER_CROP) == [img]
+    assert len(ei.image_crops(img, ei.LR_SQUARE_CROP_MEAN)) == 2
+
+
+def test_combined_vectors_are_unit_length():
+    torch.manual_seed(0)
+    features = torch.randn(5, ei.EMBED_DIM) * 7
+    combined = ei.combine_crops(features, [2, 1, 2])
+    assert combined.shape == (3, ei.EMBED_DIM)
+    assert torch.allclose(combined.norm(dim=-1), torch.ones(3), atol=1e-6)
+    # One crop: same direction as the input. Two crops: normalized before averaging, so scale does not matter.
+    assert torch.allclose(combined[1], features[2] / features[2].norm(), atol=1e-6)
+    pair = features[:2] * torch.tensor([[1.0], [100.0]])
+    assert torch.allclose(ei.combine_crops(pair, [2])[0], combined[0], atol=1e-6)
+
+
+def test_eval_center_crop_does_not_cut_a_square_crop():
+    square = random_image(900, 900)
+    with_crop, without_crop = eval_transform(), eval_transform("squash")
+    assert torch.equal(with_crop(square), without_crop(square))
+    # Control: on the full 16:9 frame the center crop does cut content, so the comparison above is meaningful.
+    wide = random_image(1600, 900)
+    assert not torch.allclose(with_crop(wide), without_crop(wide))
+
+
+def test_run_fails_when_every_file_is_skipped(tmp_path):
+    with pytest.raises(SystemExit) as failed:
+        ei.check_stored(done=0, skipped=3, root=tmp_path)
+    assert failed.value.code != 0  # a message string exits with status 1
+    assert "--root / NUSCENES_ROOT" in str(failed.value.code)
+    ei.check_stored(done=2, skipped=1, root=tmp_path)  # some stored: a few bad files are only reported
+    ei.check_stored(done=0, skipped=0, root=tmp_path)  # nothing to do is not an error
