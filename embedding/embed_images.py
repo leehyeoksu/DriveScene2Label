@@ -12,6 +12,10 @@ Run through scripts/embed.sh, which creates the venv (.venv) and sets the DB con
   bash scripts/embed.sh --search "rainy night intersection"   # quick text -> image check
   bash scripts/embed.sh --device cpu            # force a device (default: cuda -> mps -> cpu)
   bash scripts/embed.sh --preprocess openclip-eval-224-centercrop   # single center crop instead of left/right squares
+
+File mode (no DB; Colab or another GPU machine): targets come from the nuScenes JSON under --root and vectors go to
+npz parts in --out, which import_results.py loads into a DB later. Re-running with the same --out resumes.
+  python embedding/embed_images.py --source nuscenes --sink file --out /path/to/out
 """
 from __future__ import annotations
 
@@ -24,9 +28,13 @@ import sys
 import time
 from pathlib import Path
 
-import psycopg
+import numpy as np
 import torch
 from PIL import Image
+
+import npz_store
+from db import UPSERT_SQL, connect, find_dataset, to_pgvector  # noqa: F401 - re-exported for compare_preprocess.py
+from targets import targets_from_nuscenes
 
 # OpenAI CLIP weights were trained with QuickGELU; plain "ViT-L-14" loads them with GELU and warns (slightly worse vectors).
 MODEL_NAME = "ViT-L-14-quickgelu"
@@ -39,21 +47,12 @@ CENTER_CROP = "openclip-eval-224-centercrop"  # whole image -> one center crop (
 LR_SQUARE_CROP_MEAN = "lr-square-crop-mean"   # left and right h x h squares, embedded separately and averaged
 PREPROCESS_MODES = (LR_SQUARE_CROP_MEAN, CENTER_CROP)
 DEVICES = ("auto", "cuda", "mps", "cpu")
+# Where targets come from -> where vectors go. db -> db is the default; nuscenes -> file needs no DB at all.
+MODES = {("db", "db"), ("nuscenes", "file")}
 
 
 def model_key(model_name: str, pretrained: str) -> str:
     return f"{model_name}/{pretrained}"
-
-
-def connect() -> psycopg.Connection:
-    # libpq-style variables, set by scripts/embed.sh from .env. Default port = the Docker db mapping in compose.yml.
-    return psycopg.connect(
-        host=os.environ.get("PGHOST", "127.0.0.1"),
-        port=int(os.environ.get("PGPORT", "55433")),
-        user=os.environ.get("PGUSER", "drivescene"),
-        dbname=os.environ.get("PGDATABASE", "drivescene"),
-        password=os.environ.get("PGPASSWORD", ""),
-    )
 
 
 def resolve(root: Path, relative_path: str) -> Path:
@@ -115,11 +114,6 @@ def check_stored(done: int, skipped: int, root: Path) -> None:
         sys.exit(f"All {skipped} files were skipped and none stored. Check --root / NUSCENES_ROOT (now {root}).")
 
 
-def to_pgvector(v: torch.Tensor) -> str:
-    # pgvector text format: [0.1,0.2,...]. Avoids a separate pgvector Python dependency.
-    return "[" + ",".join(f"{x:.7g}" for x in v.tolist()) + "]"
-
-
 def load_model(device: str):
     import open_clip
 
@@ -129,11 +123,29 @@ def load_model(device: str):
     return model, preprocess, tokenizer
 
 
-def find_dataset(conn: psycopg.Connection, version: str) -> int:
-    row = conn.execute("SELECT id FROM dataset WHERE name='nuScenes' AND version=%s", (version,)).fetchone()
-    if row is None:
-        sys.exit(f"Dataset nuScenes {version} not found. Import it first (README: Docker로 실행하기).")
-    return row[0]
+def validate_modes(source: str, sink: str, out: str | None, overwrite: bool) -> str | None:
+    """None when the combination is usable, otherwise the error message."""
+    if (source, sink) not in MODES:
+        return f"--source {source} --sink {sink} is not supported; use db -> db (default) or nuscenes -> file"
+    if sink == "file" and not out:
+        return "--sink file needs --out DIR"
+    if sink == "file" and overwrite:
+        return "--overwrite does not apply to --sink file; use a new --out folder to recompute"
+    return None
+
+
+def build_manifest(version: str, preprocess: str, device: str) -> dict:
+    import open_clip
+
+    return {
+        "format_version": npz_store.FORMAT_VERSION,
+        "dataset": {"name": "nuScenes", "version": version},
+        "model_name": model_key(MODEL_NAME, PRETRAINED),
+        "preprocess": preprocess,
+        "embed_dim": EMBED_DIM,
+        "env": {"device": device, "torch": torch.__version__, "open_clip": open_clip.__version__,
+                "python": platform.python_version(), "platform": platform.platform()},
+    }
 
 
 def pending_files(conn, dataset_id: int, model: str, preprocess: str, include_sweeps: bool, overwrite: bool, scene: str | None,
@@ -163,9 +175,39 @@ def pending_files(conn, dataset_id: int, model: str, preprocess: str, include_sw
 
 
 @torch.no_grad()
+def encode_batches(rows, root: Path, mode: str, device: str, batch_size: int):
+    """Yield (tokens, unit vectors (len(tokens), EMBED_DIM) on CPU, files skipped in this batch) per batch of rows."""
+    model, preprocess, _ = load_model(device)
+    for start in range(0, len(rows), batch_size):
+        tokens, crops, counts, skipped = [], [], [], 0
+        for token, relative_path in rows[start:start + batch_size]:
+            try:
+                with Image.open(resolve(root, relative_path)) as img:
+                    parts = [preprocess(c) for c in image_crops(img.convert("RGB"), mode)]
+                crops.extend(parts)
+                counts.append(len(parts))
+                tokens.append(token)
+            except (OSError, ValueError) as e:
+                skipped += 1
+                print(f"  skip {relative_path}: {e}", file=sys.stderr)
+        if not crops:
+            yield [], None, skipped
+            continue
+        features = combine_crops(model.encode_image(torch.stack(crops).to(device)).float(), counts)
+        assert features.shape[1] == EMBED_DIM, f"model gives {features.shape[1]} dims, table expects {EMBED_DIM}"
+        yield tokens, features.cpu(), skipped
+
+
 def embed(args) -> None:
     root = Path(args.root)
     device = pick_device(args.device)
+    if args.sink == "file":
+        embed_to_files(args, root, device)
+    else:
+        embed_to_db(args, root, device)
+
+
+def embed_to_db(args, root: Path, device: str) -> None:
     model_id = model_key(MODEL_NAME, PRETRAINED)
     with connect() as conn:
         dataset_id = find_dataset(conn, args.version)
@@ -174,41 +216,68 @@ def embed(args) -> None:
         print(f"{len(rows)} camera files to embed with {model_id} ({args.preprocess}) on {device} (dataset id {dataset_id})")
         if not rows:
             return
-        model, preprocess, _ = load_model(device)
         started, done, skipped = time.time(), 0, 0
-        for start in range(0, len(rows), args.batch_size):
-            batch = rows[start:start + args.batch_size]
-            tokens, crops, counts = [], [], []
-            for token, relative_path in batch:
-                try:
-                    with Image.open(resolve(root, relative_path)) as img:
-                        parts = [preprocess(c) for c in image_crops(img.convert("RGB"), args.preprocess)]
-                    crops.extend(parts)
-                    counts.append(len(parts))
-                    tokens.append(token)
-                except (OSError, ValueError) as e:
-                    skipped += 1
-                    print(f"  skip {relative_path}: {e}", file=sys.stderr)
-            if not crops:
+        for tokens, features, batch_skipped in encode_batches(rows, root, args.preprocess, device, args.batch_size):
+            skipped += batch_skipped
+            if not tokens:
                 continue
-            features = combine_crops(model.encode_image(torch.stack(crops).to(device)).float(), counts)
-            assert features.shape[1] == EMBED_DIM, f"model gives {features.shape[1]} dims, table expects {EMBED_DIM}"
             with conn.cursor() as cur:
-                cur.executemany(
-                    """
-                    INSERT INTO image_embedding(dataset_id, sample_data_token, model_name, preprocess, embedding)
-                    VALUES (%s, %s, %s, %s, %s::vector)
-                    ON CONFLICT(dataset_id, sample_data_token, model_name, preprocess)
-                    DO UPDATE SET embedding=EXCLUDED.embedding, created_at=now()
-                    """,
-                    [(dataset_id, t, model_id, args.preprocess, to_pgvector(f)) for t, f in zip(tokens, features.cpu())],
-                )
+                cur.executemany(UPSERT_SQL, [(dataset_id, t, model_id, args.preprocess, to_pgvector(f))
+                                             for t, f in zip(tokens, features)])
             conn.commit()  # commit per batch so an interrupted run resumes where it stopped
             done += len(tokens)
             rate = done / max(time.time() - started, 1e-6)
             print(f"  {done}/{len(rows)}  ({rate:.1f} img/s)")
         print(f"Done: {done} stored, {skipped} skipped, {time.time() - started:.0f}s")
         check_stored(done, skipped, root)
+
+
+def embed_to_files(args, root: Path, device: str) -> None:
+    """nuScenes JSON -> npz parts in args.out. No DB connection. Tokens already in readable parts are skipped."""
+    out = Path(args.out)
+    try:
+        targets = targets_from_nuscenes(root, args.version, include_sweeps=args.include_sweeps, scene=args.scene)
+    except FileNotFoundError as e:
+        sys.exit(str(e))
+    try:
+        npz_store.open_output(out, build_manifest(args.version, args.preprocess, device))
+    except npz_store.ManifestMismatch as e:
+        sys.exit(str(e))
+    have = npz_store.existing_tokens(out)
+    rows = [(t.token, t.relative_path) for t in targets if t.token not in have]
+    if args.limit:
+        rows = rows[:args.limit]
+    print(f"{len(rows)} camera files to embed with {model_key(MODEL_NAME, PRETRAINED)} ({args.preprocess}) on {device} "
+          f"-> {out} ({len(targets)} targets, {len(have)} already in the folder)")
+    if not rows:
+        print("Done: 0 stored, 0 skipped")
+        return
+    started, done, skipped = time.time(), 0, 0
+    buf_tokens: list[str] = []
+    buf_vectors: list[np.ndarray] = []
+
+    def flush(size: int) -> None:
+        nonlocal buf_tokens, buf_vectors
+        vectors = np.concatenate(buf_vectors)
+        path = npz_store.write_part(out, buf_tokens[:size], vectors[:size])
+        print(f"  wrote {path.name} ({min(size, len(buf_tokens))} images)")
+        buf_tokens, buf_vectors = buf_tokens[size:], [vectors[size:]]
+
+    for tokens, features, batch_skipped in encode_batches(rows, root, args.preprocess, device, args.batch_size):
+        skipped += batch_skipped
+        if not tokens:
+            continue
+        buf_tokens += tokens
+        buf_vectors.append(features.numpy().astype(np.float32))
+        done += len(tokens)
+        while len(buf_tokens) >= npz_store.PART_SIZE:
+            flush(npz_store.PART_SIZE)
+        rate = done / max(time.time() - started, 1e-6)
+        print(f"  {done}/{len(rows)}  ({rate:.1f} img/s)")
+    if buf_tokens:
+        flush(len(buf_tokens))
+    print(f"Done: {done} stored, {skipped} skipped, {time.time() - started:.0f}s")
+    check_stored(done, skipped, root)
 
 
 @torch.no_grad()
@@ -278,11 +347,22 @@ def main() -> None:
     p.add_argument("--scene", help="only this scene name, e.g. scene-0061")
     p.add_argument("--limit", type=int, help="embed at most N files (for a quick trial)")
     p.add_argument("--overwrite", action="store_true", help="recompute files that already have an embedding")
+    p.add_argument("--source", choices=("db", "nuscenes"), default="db",
+                   help="where the target list comes from: the catalog DB, or the nuScenes JSON under --root")
+    p.add_argument("--sink", choices=("db", "file"), default="db",
+                   help="where vectors go: image_embedding, or npz parts in --out (load with import_results.py)")
+    p.add_argument("--out", metavar="DIR", help="output folder for --sink file; reuse it to resume")
     p.add_argument("--search", metavar="TEXT", help="instead of embedding, search stored images with a text query")
     p.add_argument("-k", type=int, default=10, help="results for --search")
     p.add_argument("--open", action="store_true", help="with --search: show the result images in the browser")
     args = p.parse_args()
-    search(args) if args.search else embed(args)
+    if args.search:
+        search(args)
+        return
+    error = validate_modes(args.source, args.sink, args.out, args.overwrite)
+    if error:
+        sys.exit(error)
+    embed(args)
 
 
 if __name__ == "__main__":

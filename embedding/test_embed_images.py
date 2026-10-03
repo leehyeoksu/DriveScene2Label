@@ -76,3 +76,25 @@ def test_run_fails_when_every_file_is_skipped(tmp_path):
     assert "--root / NUSCENES_ROOT" in str(failed.value.code)
     ei.check_stored(done=2, skipped=1, root=tmp_path)  # some stored: a few bad files are only reported
     ei.check_stored(done=0, skipped=0, root=tmp_path)  # nothing to do is not an error
+
+
+@pytest.mark.parametrize("src,sink,out,ow,ok", [
+    ("db", "db", None, False, True), ("nuscenes", "file", "/x", False, True),
+    ("nuscenes", "db", None, False, False), ("db", "file", "/x", False, False),
+    ("nuscenes", "file", None, False, False), ("nuscenes", "file", "/x", True, False)])
+def test_validate_modes(src, sink, out, ow, ok):
+    assert (ei.validate_modes(src, sink, out, ow) is None) == ok
+
+
+def test_manifest_fields():
+    m = ei.build_manifest("v1.0-mini", ei.LR_SQUARE_CROP_MEAN, "cpu")
+    assert m["model_name"] == "ViT-L-14-quickgelu/openai" and m["embed_dim"] == 768 and m["format_version"] == 1
+    assert m["dataset"] == {"name": "nuScenes", "version": "v1.0-mini"} and m["preprocess"] == ei.LR_SQUARE_CROP_MEAN
+    assert {"device", "torch", "open_clip", "python", "platform"} <= m["env"].keys() and m["env"]["device"] == "cpu"
+
+
+def test_to_pgvector_accepts_numpy_and_torch():
+    import numpy as np
+    import db
+    v = np.array([0.5, -0.25, 1e-8], dtype=np.float32)
+    assert db.to_pgvector(v) == db.to_pgvector(torch.from_numpy(v)) == "[0.5,-0.25,1e-08]"
