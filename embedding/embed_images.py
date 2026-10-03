@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import platform
 import subprocess
 import os
@@ -49,6 +50,8 @@ PREPROCESS_MODES = (LR_SQUARE_CROP_MEAN, CENTER_CROP)
 DEVICES = ("auto", "cuda", "mps", "cpu")
 # Where targets come from -> where vectors go. db -> db is the default; nuscenes -> file needs no DB at all.
 MODES = {("db", "db"), ("nuscenes", "file")}
+# --check-reference passes when every reference image re-embeds to at least this cosine with its stored vector.
+REFERENCE_MIN_COSINE = 0.9999
 
 
 def model_key(model_name: str, pretrained: str) -> str:
@@ -280,6 +283,39 @@ def embed_to_files(args, root: Path, device: str) -> None:
     check_stored(done, skipped, root)
 
 
+def min_cosine(a: np.ndarray, b: np.ndarray) -> float:
+    """Smallest cosine similarity between matching rows of a and b."""
+    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
+    cos = (a * b).sum(axis=1) / (np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1))
+    return float(cos.min())
+
+
+def check_reference(args) -> None:
+    """Re-embed the reference images under --root (no DB) and compare with the stored vectors. Run this first on a
+    new machine (Colab, another GPU): below REFERENCE_MIN_COSINE its vectors must not be mixed with the DB's."""
+    root = Path(args.root)
+    with np.load(args.check_reference, allow_pickle=False) as z:
+        tokens, paths, expected = z["tokens"].tolist(), z["relative_paths"].tolist(), z["vectors"]
+        meta = json.loads(str(z["meta"]))
+    if meta["model_name"] != model_key(MODEL_NAME, PRETRAINED):
+        sys.exit(f"Reference was made with {meta['model_name']}, this script uses {model_key(MODEL_NAME, PRETRAINED)}")
+    device = pick_device(args.device)
+    print(f"Checking {len(tokens)} reference images ({meta['preprocess']}) under {root}")
+    got, skipped = {}, 0
+    for batch_tokens, features, batch_skipped in encode_batches(list(zip(tokens, paths)), root, meta["preprocess"],
+                                                                device, args.batch_size):
+        skipped += batch_skipped
+        got.update(zip(batch_tokens, features.numpy() if batch_tokens else []))
+    if skipped:
+        sys.exit(f"{skipped} reference images could not be read under {root}. Check --root / NUSCENES_ROOT.")
+    actual = np.stack([got[t] for t in tokens])
+    lowest = min_cosine(expected, actual)
+    verdict = "OK" if lowest >= REFERENCE_MIN_COSINE else "FAIL"
+    print(f"Reference check: min cos {lowest:.7f} over {len(tokens)} images (threshold {REFERENCE_MIN_COSINE}) -> {verdict}")
+    if verdict == "FAIL":
+        sys.exit(1)
+
+
 @torch.no_grad()
 def search(args) -> None:
     """Text -> image sanity check: encode the query with the same CLIP model and list the nearest camera images."""
@@ -352,10 +388,16 @@ def main() -> None:
     p.add_argument("--sink", choices=("db", "file"), default="db",
                    help="where vectors go: image_embedding, or npz parts in --out (load with import_results.py)")
     p.add_argument("--out", metavar="DIR", help="output folder for --sink file; reuse it to resume")
+    p.add_argument("--check-reference", metavar="PATH",
+                   help="instead of embedding, re-embed the reference images (embedding/fixtures/reference.npz) "
+                        "under --root and compare; exit 1 below the threshold. No DB needed")
     p.add_argument("--search", metavar="TEXT", help="instead of embedding, search stored images with a text query")
     p.add_argument("-k", type=int, default=10, help="results for --search")
     p.add_argument("--open", action="store_true", help="with --search: show the result images in the browser")
     args = p.parse_args()
+    if args.check_reference:
+        check_reference(args)
+        return
     if args.search:
         search(args)
         return

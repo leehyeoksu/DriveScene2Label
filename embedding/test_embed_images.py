@@ -98,3 +98,14 @@ def test_to_pgvector_accepts_numpy_and_torch():
     import db
     v = np.array([0.5, -0.25, 1e-8], dtype=np.float32)
     assert db.to_pgvector(v) == db.to_pgvector(torch.from_numpy(v)) == "[0.5,-0.25,1e-08]"
+
+
+def test_min_cosine_identical():
+    from testutil import unit
+    v = unit(3); assert ei.min_cosine(v, v) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_min_cosine_detects_drift():
+    from testutil import unit
+    v = unit(3); w = v.copy(); w[1] = -v[1]; assert ei.min_cosine(v, w) < ei.REFERENCE_MIN_COSINE
+    assert ei.min_cosine(v, w) == pytest.approx(-1.0, abs=1e-6)  # row-wise: only the flipped row counts
