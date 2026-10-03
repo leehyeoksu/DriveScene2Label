@@ -13,7 +13,7 @@ if [[ "${1:-start}" == "stop" ]]; then
 fi
 mkdir -p "$pg_home/packages" "$pg_prefix"
 if [[ ! -x "$pg_bin/postgres" ]]; then
- (cd "$pg_home/packages" && apt-get download postgresql-16 postgresql-client-16 libpq5)
+ (cd "$pg_home/packages" && apt-get download postgresql-16 postgresql-client-16 libpq5 postgresql-16-pgvector)
  for package in "$pg_home/packages/"*.deb; do dpkg-deb -x "$package" "$pg_prefix"; done
 fi
 if [[ ! -f "$pg_home/password" ]]; then
