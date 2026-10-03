@@ -1,0 +1,201 @@
+# DriveScene2Label Backend API Specification
+
+검증 기준: 2026-10-03, origin/main `ffb6dc8` 위 로컬 통합 변경. 프론트엔드 변경 없음. Docker 통합과 함께 제공하는 REST 계약이다.
+
+## 1. 서버 구성
+
+- Spring Boot: `http://localhost:8080`. 프론트엔드는 아래 `/api/*`만 호출한다.
+- FastAPI: `http://localhost:8000`. Spring 내부 호출용이며 DB에 접근하지 않는다.
+- PostgreSQL/pgvector: Spring이 metadata, embedding, job, prediction을 저장한다. GT와 prediction은 별도 테이블이다.
+- 브라우저는 같은 origin의 reverse proxy를 권장한다. 별도 origin CORS 설정/인증은 현재 제공하지 않는다.
+- Spring과 AI의 이미지 root는 동일한 파일 집합을 가리켜야 한다. 요청에는 DB에서 읽은 상대 경로만 전달한다.
+- mini는 Spring 및 AI 모두 `VESPA_DATASET_VERSION=v1.0-mini`로 실행한다. 기본 VESPA 버전은 trainval이다.
+
+## 2. 기본 응답 및 타입
+
+성공 응답은 별도 envelope 없이 객체 또는 배열이다. JSON 필드는 Spring camelCase, AI snake_case이다.
+`id`는 DB 숫자 ID, `token`은 nuScenes 문자열 식별자이다. 서로 바꾸어 전달하지 않는다.
+정수 BIGINT 값은 JS 안전 정수 범위를 넘을 수 있으므로 대규모 운영 시 문자열 ID 정책이 추가로 필요하다.
+시간은 `timestampUs`(epoch microseconds) 또는 ISO-8601 job 시간이다. 좌표/길이는 m, 속도는 m/s.
+아래 표에서 body `없음`은 전송하지 않는다는 뜻이다. 경로의 `{id}`는 해당 행의 숫자 ID이다.
+모든 API는 잘못된 필드 타입 400, DB 작업 불가 503, 예상하지 못한 서버 오류 500이 가능하다.
+
+### 공통 오류
+
+검증/업무 오류 및 DB 예외는 다음 형태다:
+
+```json
+{"code":"HTTP_404","message":"Job not found"}
+```
+
+- `HTTP_400/404/409/502/503`: 각 업무 오류. message는 설명이며 프로그램 분기는 status/code를 사용한다.
+- `INVALID_REQUEST` (400): 필수값 누락, JSON 또는 타입 오류.
+- `DATABASE_UNAVAILABLE` (503): DB 접근 또는 transaction 실패. SQL/접속 정보는 응답에 포함하지 않는다.
+- 라우팅 404, 허용되지 않은 method 405, 기타 미처리 500은 Spring 기본 오류 형태일 수 있다. 모든 오류를 단일 형태로 가정하지 않는다.
+
+## 3. Dataset API
+
+|Method|URL / path variable|Query / body|200 Response|추가 오류|
+|---|---|---|---|---|
+|GET|`/api/datasets`|없음 / 없음|`Dataset[]`|—|
+|GET|`/api/datasets/{id}/scenes` dataset ID|없음 / 없음|`Scene[]`|404 dataset 없음|
+|GET|`/api/datasets/{id}/stats` dataset ID|없음 / 없음|`{scenes,samples,sensorFiles,keyframeFiles,gtBoxes,maps}` 모두 정수|404|
+|GET|`/api/datasets/{id}/categories` dataset ID|없음 / 없음|`Category[]`|404|
+
+타입:
+- Dataset: `id:number,name:string,version:string,storageKey:string,rootRelativePath:string,sourceChecksum:string`.
+- Scene: `id,datasetId` 숫자; `token,logToken,name,description,firstSampleToken,lastSampleToken` 문자열; `nbrSamples` 정수.
+- Category: `id,datasetId` 숫자; `token,name,description` 문자열.
+
+## 4. Scene / Sample / Sensor / GT API
+
+|Method|URL / path variable|Query (기본값) / body|200 Response|추가 오류|
+|---|---|---|---|---|
+|GET|`/api/scenes/{id}/samples` scene ID|`limit=100` (1..500), `offset=0` (>=0) / 없음|`Sample[]`|400,404|
+|GET|`/api/samples/{id}` sample ID|`keyframesOnly=true` / 없음|`{sample:Sample,sensorFiles:SensorFile[],maps:MapView[]}`|404|
+|GET|`/api/samples/{id}/annotations` sample ID|없음 / 없음|`GtAnnotation[]`|404|
+|GET|`/api/sensor-files/{id}/calibration` sample_data ID|없음 / 없음|`CalibratedSensor`|404|
+|GET|`/api/sensor-files/{id}/pose` sample_data ID|없음 / 없음|`EgoPose`|404|
+|GET|`/api/sensor-files/{id}/content` sample_data ID|없음 / 없음|파일 bytes|404 metadata/파일 없음|
+|GET|`/api/maps/{id}/content` map ID|없음 / 없음|파일 bytes|404|
+
+타입:
+- Sample: `id,datasetId,timestampUs` 숫자; `token,sceneToken,prevToken,nextToken` 문자열. 연결 토큰은 없을 수 있다.
+- SensorFile: `id,token,channel,modality,relativePath,timestampUs,isKeyFrame,width,height,egoPoseToken,calibratedSensorToken,vehicleX,vehicleY,vehicleZ,contentUrl`. `isKeyFrame` boolean, ID/시간/크기/좌표 numeric, 나머지 string. vehicleXYZ는 해당 센서 시간의 ego world 위치다.
+- MapView: `id:number,token:string,relativePath:string,location:string,contentUrl:string`.
+- GtAnnotation: `id,datasetId,token,sampleToken,instanceToken,visibilityToken,centerX,centerY,centerZ,sizeW,sizeL,sizeH,rotationW,rotationX,rotationY,rotationZ,numLidarPts,numRadarPts,prevToken,nextToken`. ID/box/point count numeric, token string. 일부 관계값 nullable.
+- CalibratedSensor: `id,datasetId,token,sensorToken,translationX/Y/Z,rotationW/X/Y/Z,intrinsic00/01/02/10/11/12/20/21/22` (슬래시는 실제 JSON 필드 각각을 뜻함). 카메라 외 intrinsic은 null 가능. sensor→ego 변환.
+- EgoPose: `id,datasetId,token,timestampUs,translationX/Y/Z,rotationW/X/Y/Z`. ego→world 변환.
+
+GT/예측 모두 world 중심 좌표, size W,L,H, quaternion W,X,Y,Z. GT API에는 class 이름이 아직 포함되지 않는다. DB의 object_instance→category JOIN으로 대응할 수 있으나 현재 REST에서 instance→category 조회는 제공하지 않는다. GT 비교는 datasetId+sampleToken으로 같은 프레임을 찾은 뒤 공간적으로 매칭해야 하며 box끼리 일대일 FK는 없다.
+
+파일 응답은 JPEG/PNG에 대응 MIME, 그 외 `application/octet-stream`, `Content-Length`, `X-Content-Type-Options: nosniff`를 사용한다. 반환된 contentUrl은 Spring 기준 상대 URL이다.
+
+## 5. Embedding 저장 / 이미지 검색 API
+
+|Method|URL / path variable|Query / body|200 Response|추가 오류|
+|---|---|---|---|---|
+|POST|`/api/sensor-files/{id}/embedding` sample_data ID|`overwrite=false` / 없음|`EmbeddingWriteResult`|400 카메라 아님,404 파일 없음,409 root 매핑 불가,502 AI 응답 오류,503 연결/timeout|
+|GET|`/api/datasets/{id}/embeddings` dataset ID|없음 / 없음|`[{modelName,preprocess,images}]`|없는 dataset도 빈 배열|
+|GET|`/api/sensor-files/{id}/similar` source sample_data ID|`limit=10` (1..100), `modelName`, `preprocess`, `excludeSameScene=false` / 없음|`SimilarImage[]`|400,404 source embedding 없음|
+
+```json
+{"sensorFileId":42,"datasetId":1,"sampleDataToken":"camera-token","modelName":"ViT-L-14-quickgelu/openai","preprocess":"lr-square-crop-mean","dimension":768,"status":"STORED"}
+```
+
+`STORED`는 생성 또는 덮어쓰기, `SKIPPED`는 기존 항목 유지. unique 키는 `(dataset_id,sample_data_token,model_name,preprocess)`이다. skip는 AI를 호출하지 않는다. 동시 생성도 ON CONFLICT로 중복 방지한다. overwrite는 마지막 저장이 적용된다. AI 호출 중 DB transaction을 유지하지 않는다. 모델/전처리/차원/유한수/L2 norm을 확인한 뒤 단일 upsert한다. 실패한 추론은 기존 벡터를 변경하지 않는다.
+배치 endpoint는 없다. 작업 스크립트에서 이미지 ID를 순차 호출하고 실패한 항목만 재시도한다. 현재 CLIP inference lock 때문에 높은 병렬도는 피한다.
+
+SimilarImage: `id,token,sceneName,sampleToken,channel,relativePath,timestampUs,distance,contentUrl`. source와 같은 dataset/model/preprocess에서 자기 자신을 제외하고 cosine distance 오름차순으로 반환한다. default model/preprocess는 위 예시와 동일하다.
+
+## 6. Natural Language Scene Search API
+
+`GET /api/search/scenes` — request body 없음.
+
+|Query|필수|기본 / 제한|
+|---|---|---|
+|q|예|공백 제거 후 1..10000자|
+|k|아니오|10, 1..100 scenes|
+|datasetId|아니오|양수, 생략하면 모든 dataset|
+|aggregation|아니오|TOP_K_AVERAGE, MAX, AVERAGE (대소문자 무관)|
+|imageTopK|아니오|3, 1..100; TOP_K_AVERAGE에 적용|
+|keyframesOnly|아니오|true|
+
+```bash
+curl --get http://localhost:8080/api/search/scenes --data-urlencode 'q=rainy night road' --data 'k=10'
+```
+
+응답 예시 (수치는 설명용):
+
+```json
+{"query":"rainy night road","modelName":"ViT-L-14-quickgelu/openai","preprocess":"lr-square-crop-mean","aggregation":"TOP_K_AVERAGE","imageTopK":3,"keyframesOnly":true,"scenes":[{"sceneId":7,"datasetId":1,"sceneToken":"scene-token","sceneName":"scene-0061","description":"...","score":0.31,"distance":0.69,"matchedImages":234,"contributingImages":3,"bestImageId":42,"bestSampleToken":"sample-token","bestImagePath":"samples/CAM_FRONT/example.jpg","contentUrl":"/api/sensor-files/42/content"}]}
+```
+
+Text는 `clip-text-tokenizer`, image는 `lr-square-crop-mean`이 정상이다. modality별 preprocess 이름을 같은 문자열로 비교하지 않는다. 두 modality의 model은 `ViT-L-14-quickgelu/openai`로 일치한다.
+DB는 같은 image model/preprocess의 camera만 선택해 `<=>` 거리 계산 → scene별 aggregation → score 내림차순으로 k개를 반환한다. score=1-distance이며 확률이 아니다. MAX는 최고 이미지, AVERAGE는 전체 평균, TOP_K_AVERAGE는 scene 내 상위 N개 평균이다. N보다 적으면 존재하는 개수로 평균낸다. 대표 이미지는 가장 가까운 이미지다. image LIMIT를 먼저 적용하지 않는다.
+200 + `scenes:[]`는 정상적인 빈 결과. 없는 양수 datasetId도 빈 결과다. 400 잘못된 입력, 502 AI 비정상 응답/HTTP 오류, 503 AI 연결 실패/timeout. 한국어 검색은 요청 가능하지만 이 OpenAI CLIP의 한국어 검색 품질은 검증하지 않았다.
+
+## 7. Auto Label Job 생성 / 상태
+
+`POST /api/auto-label/jobs` — query 없음. 선택 header `Idempotency-Key` (1..200자).
+
+```json
+{"sceneToken":"scene-token","datasetId":1,"classMode":8}
+```
+
+sceneToken/classMode 필수, datasetId 선택 양수. 동일 token이 여러 dataset에 있으면 datasetId가 필요하다. scene의 dataset version이 설정된 VESPA version과 같아야 한다.
+
+202 응답:
+
+```json
+{"jobId":12,"status":"PENDING"}
+```
+
+같은 dataset/Idempotency-Key/scene/classMode 재요청은 기존 job을 반환하며 status가 이미 COMPLETED/FAILED일 수도 있다. 키 생략은 매번 새 job. 같은 키로 다른 scene/classMode는409. 실패 작업 재실행은 새 키 사용.
+400 classMode/버전/빈 scene 오류,404 scene 없음,409 token 모호/키 충돌,503 DB 오류.
+
+`GET /api/auto-label/jobs/{id}` — job 숫자 ID, query/body 없음. 200:
+
+```json
+{"jobId":12,"datasetId":1,"status":"RUNNING","errorMessage":null,"createdAt":"2026-10-03T12:00:00Z","startedAt":"2026-10-03T12:00:01Z","completedAt":null}
+```
+
+404 job 없음. FAILED는 errorMessage 및 completedAt이 채워진다. DB 컬럼명은 `failure_reason`, 외부 필드는 `errorMessage`다.
+job 생성과 sample snapshot은 한 transaction. worker가 PENDING을 claim하고 짧은 transaction으로 RUNNING을 저장한 다음 HTTP 호출한다. 프론트엔드는 2~5초 간격으로 조회하고 terminal 상태에서 중단한다. 최대 예상 대기시간은 배포 timeout에 맞춰 안내한다.
+
+## 8. Auto Label Result / Artifact
+
+`GET /api/auto-label/jobs/{id}/results` — job 숫자 ID, query/body 없음.
+200 응답 예시:
+
+```json
+{"jobId":12,"datasetId":1,"mappingName":"8class","coordinateFrame":"WORLD","scoreType":"VESPA_CONSTANT","sampleTokens":["sample-a","sample-empty"],"boxes":[{"id":100,"sampleToken":"sample-a","boxIndex":0,"detectionName":"car","centerX":1.0,"centerY":2.0,"centerZ":3.0,"sizeW":2.0,"sizeL":4.0,"sizeH":1.0,"rotationW":1.0,"rotationX":0.0,"rotationY":0.0,"rotationZ":0.0,"velocityX":0.0,"velocityY":0.0,"detectionScore":1.0,"attributeName":""}],"artifacts":[{"id":9,"artifactType":"FINAL_JSON","storageKey":"vespa-results","relativePath":"run/outs/vlm/p_final/#out_labels/vlm_p_final_scene-0061_8class.json","checksum":"64-character-sha256","contentType":"application/json"}]}
+```
+
+404 job 없음,409 PENDING/RUNNING/FAILED. sampleTokens에 모든 처리 sample이 들어가며 box 없는 sample도 유지한다. boxes는 sampleToken,boxIndex 순서. 결과는 현재 전체 반환이므로 대규모 scene에는 pagination이 후속으로 필요하다.
+`detectionScore=1.0`은 VESPA 고정값이며 calibrated confidence가 아니다. velocity는 원본 변환 출력이며 GT sample_annotation에는 직접 대응 필드가 없다. tracking instanceToken, visibility, lidar/radar point counts는 예측에 존재하지 않는다.
+`predicted_annotation` + sample receipt + artifact + job COMPLETED를 같은 transaction으로 저장한다. 실패 시 전체 rollback 후 별도 transaction으로 FAILED 기록한다. DB 자체가 다운이면 FAILED 기록도 실패하므로 복구 작업이 필요하다.
+Artifact는 metadata만 제공한다. relativePath는 다운로드 URL이 아니다. 최종 JSON/Rerun artifact 다운로드 endpoint는 현재 없다. checksum은 FastAPI가 canonical JSON으로 계산한 값이며 파일 bytes SHA와 동일하다고 가정하지 않는다. NPZ는 DB 저장/REST 반환 대상이 아니다.
+
+## 9. Enum / 상태
+
+- Job status: PENDING → RUNNING → COMPLETED 또는 FAILED. claim 전 실패도 DB schema상 가능하다.
+- ClassMode: 1 (`vehicle`), 3 (`vehicle,pedestrian,bicycle`), 8 (`car,truck,bus,trailer,construction_vehicle,pedestrian,motorcycle,bicycle`).
+- mappingName: 1class/3class/8class. coordinateFrame: WORLD. scoreType: VESPA_CONSTANT (현재 wrapper).
+- ArtifactType: FINAL_JSON/RERUN/OTHER (현재 저장 경로는 FINAL_JSON만 생성).
+- Embedding status: STORED/SKIPPED.
+
+## 10. 내부 FastAPI 계약 / Health
+
+프론트엔드에서 직접 호출하지 않는다. `/docs`, `/openapi.json`으로 Pydantic 계약 확인 가능.
+
+|Method|Path|body|성공|오류|
+|---|---|---|---|---|
+|GET|`/health`|없음|200 `{status,service,inference:{clip,vespa},device}`|503 CLIP not ready; 모델 startup 실패는 프로세스 기동 자체 실패|
+|POST|`/embedding/text`|`{"text":"rainy night road"}`|200 `{model_name,dimension:768,embedding:[...],preprocess:"clip-text-tokenizer"}`|422 입력,503 미준비,500 inference|
+|POST|`/embedding/image`|`{"image_path":"samples/CAM_FRONT/example.jpg","preprocess":"lr-square-crop-mean"}`|200 같은 embedding 구조|422 입력,404 파일 없음,400 잘못된 경로/이미지,503 미준비,500 inference|
+|POST|`/auto-label`|`{"scene_name":"scene-0061","class_mode":8,"job_id":12,"execution_token":"UUID"}`|200 아래 구조|422 입력,404 scene 없음,409 실행 중,503 미설정/실행불가,502 실행/출력 오류,504 timeout|
+
+AI 요청에는 path/query 변수가 없다. image 파일 upload는 현재 지원하지 않고 상대 경로 JSON만 받는다. image preprocess 대안 `openclip-eval-224-centercrop`도 AI는 지원하지만 Spring 기본 저장/검색 정책은 lr-square-crop-mean이다.
+Auto-label job_id/execution_token은 둘 다 생략하거나 둘 다 제공하며 Spring은 항상 제공한다. 응답: `run_id,scene_name,class_mode,job_id,execution_token,mapping_name,split,coordinate_frame,score_type,meta,results,artifact_path,result_checksum`. results는 `{sample_token:[{sample_token,translation:[x,y,z],size:[w,l,h],rotation:[w,x,y,z],velocity:[vx,vy],detection_name,detection_score,attribute_name}]}`.
+AI 업무 오류는 `{"detail":{"code":"...","message":"..."}}`, Pydantic 422는 detail 배열이다. Spring이 이를 그대로 프론트에 중계하지 않는다.
+`health.inference.vespa=configured`는 경로/파일 설정 검사이고 모델 실행 성공 보장이 아니다. Spring 별도 health endpoint는 현재 없다. 단순 접근 확인은 GET /api/datasets를 사용한다.
+
+## 11. 프론트엔드 호출 순서
+
+1. GET /api/datasets → dataset ID 확보.
+2. 목록 탐색은 dataset scenes → scene samples → sample detail → camera contentUrl.
+3. 이미지 embedding 준비는 POST /api/sensor-files/{id}/embedding (이미 준비되어 있으면 SKIPPED).
+4. 자연어 검색은 GET /api/search/scenes → sceneId/sceneToken/datasetId 확보.
+5. 선택 scene의 token으로 POST /api/auto-label/jobs, 새 사용자 실행마다 새 Idempotency-Key. 네트워크 재시도에는 같은 키 유지.
+6. GET /api/auto-label/jobs/{id} polling. FAILED는 errorMessage 표시, COMPLETED일 때 /results 호출.
+7. results.sampleTokens와 scene sample 목록의 token을 연결해 sample ID를 구하고 /api/samples/{id}/annotations로 GT를 읽는다.
+8. 같은 world 좌표계에서 GT/예측을 비교한다. 카메라 투영 시 world→ego→sensor 역변환과 intrinsic 적용이 필요하다.
+
+## 12. 운영 제약 / 실행 / 검증
+
+- MVP는 Spring DB polling worker + FastAPI sync subprocess. VESPA 프로세스 timeout 7200초, Spring read timeout7300초, connect5초. CLIP read timeout30초. timeout 설정은 Spring이 VESPA보다 충분히 길어야 한다.
+- FastAPI `--workers 1`, Spring worker 한 인스턴스를 권장한다. VESPA lock은 프로세스별이다. 여러 Spring worker를 동시에 돌리면 AI busy409로 job FAILED가 될 수 있다.
+- RUNNING 도중 Spring 종료/네트워크 단절 후 자동 lease 복구, retry queue, 취소 API는 없다. 운영 전 복구 정책이 필요하다. 결과를 받지 못해 FAILED여도 AI 파일이 남을 수 있다.
+- VESPA 원본 main의 부분 scene 출력 제한을 외부 vespa_runner.py에서 우회하고 원본 writer 변환 함수를 재사용한다. 원본 저장소는 수정하지 않는다. 자세한 설정은 [VESPA wrapper](ai-server/VESPA.md).
+- 실행 절차/실제 mini 시나리오/발표 설명: [통합 검증](docs/integration-verification.md).

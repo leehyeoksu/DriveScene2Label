@@ -14,6 +14,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest(properties={
+ "auto-label.worker.enabled=false",
  "spring.datasource.url=${TEST_DB_URL:jdbc:postgresql://localhost:55432/drivescene_test}",
  "spring.datasource.username=${TEST_DB_USERNAME:drivescene}",
  "spring.datasource.password=${TEST_DB_PASSWORD:}",

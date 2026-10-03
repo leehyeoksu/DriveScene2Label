@@ -1,0 +1,10 @@
+# NVIDIA Container Toolkit / Docker Desktop WSL GPU support required.
+services:
+  ai-server:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

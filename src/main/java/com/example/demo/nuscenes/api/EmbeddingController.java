@@ -8,7 +8,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
-/** Image embedding lookups. Vectors are written by embedding/embed_images.py; text queries belong to the FastAPI side. */
+/** Image embedding lookups. Vectors are written by the Spring image service or the offline import CLI. */
 @RestController
 @RequestMapping("/api")
 public class EmbeddingController {

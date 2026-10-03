@@ -94,3 +94,13 @@ graphify-out/
 
 # Small reference vectors for embed_images.py --check-reference (committed on purpose)
 !embedding/fixtures/*.npz
+
+# Generated caches, artifacts and Windows metadata
+*Zone.Identifier
+.pytest_cache/
+.ruff_cache/
+/models/
+/results/
+*.rrd
+*.pem
+*.key

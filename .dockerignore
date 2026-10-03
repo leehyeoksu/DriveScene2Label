@@ -11,3 +11,26 @@
 !src/main/
 !src/main/**
 **/*Zone.Identifier
+
+!ai-server/
+!ai-server/**
+!embedding/
+!embedding/clip_core.py
+ai-server/.venv*/
+**/__pycache__/
+**/.pytest_cache/
+**/*.pyc
+**/*Zone.Identifier
+
+# Defense in depth within allowed source directories
+**/.env
+**/.env.*
+**/.git/
+**/*.pt
+**/*.pth
+**/*.ckpt
+**/*.safetensors
+**/*.onnx
+**/*.npz
+**/*.npy
+**/*.log

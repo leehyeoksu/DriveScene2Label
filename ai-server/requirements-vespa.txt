@@ -1,0 +1,13 @@
+# VESPA-Direct inference imports, isolated from CLIP's NumPy 2 environment.
+numpy==1.26.4
+pillow==11.3.0
+opencv-python==4.11.0.86
+nuscenes-devkit==1.2.0
+rerun-sdk==0.21.0
+hdbscan==0.8.40
+open3d==0.19.0
+transformers==4.49.0
+truckscenes-devkit==1.0.0
+scikit-learn==1.5.2
+PyYAML==6.0.2
+opencv-python-headless==4.11.0.86

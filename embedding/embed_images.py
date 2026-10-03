@@ -37,43 +37,15 @@ import npz_store
 from db import UPSERT_SQL, connect, find_dataset, to_pgvector  # noqa: F401 - re-exported for compare_preprocess.py
 from targets import targets_from_nuscenes
 
-# OpenAI CLIP weights were trained with QuickGELU; plain "ViT-L-14" loads them with GELU and warns (slightly worse vectors).
-MODEL_NAME = "ViT-L-14-quickgelu"
-PRETRAINED = "openai"
-EMBED_DIM = 768  # must match vector(768) in V2__image_embedding.sql
-# --preprocess values, stored as-is in image_embedding.preprocess. Rename the value when its behavior changes.
-# Both feed each image (or crop) through open_clip's eval transform for the model:
-# resize shorter side to 224 bicubic, center crop 224x224, OpenAI CLIP mean/std.
-CENTER_CROP = "openclip-eval-224-centercrop"  # whole image -> one center crop (drops both sides of a 16:9 frame)
-LR_SQUARE_CROP_MEAN = "lr-square-crop-mean"   # left and right h x h squares, embedded separately and averaged
-PREPROCESS_MODES = (LR_SQUARE_CROP_MEAN, CENTER_CROP)
+# Re-export shared inference helpers for existing scripts/tests.
+from clip_core import (MODEL_NAME, PRETRAINED, EMBED_DIM, CENTER_CROP, LR_SQUARE_CROP_MEAN,
+                       PREPROCESS_MODES, model_key, resolve, available_devices, square_crops,
+                       image_crops, combine_crops, load_model, encode_text)
 DEVICES = ("auto", "cuda", "mps", "cpu")
 # Where targets come from -> where vectors go. db -> db is the default; nuscenes -> file needs no DB at all.
 MODES = {("db", "db"), ("nuscenes", "file")}
 # --check-reference passes when every reference image re-embeds to at least this cosine with its stored vector.
 REFERENCE_MIN_COSINE = 0.9999
-
-
-def model_key(model_name: str, pretrained: str) -> str:
-    return f"{model_name}/{pretrained}"
-
-
-def resolve(root: Path, relative_path: str) -> Path:
-    """Same rule as DatasetFiles.resolve: relative path only, must stay inside the dataset root."""
-    if not relative_path or Path(relative_path).is_absolute():
-        raise ValueError("Relative dataset path required")
-    real_root = root.resolve(strict=True)
-    real_file = (real_root / relative_path).resolve(strict=True)
-    if not real_file.is_relative_to(real_root) or not real_file.is_file():
-        raise ValueError(f"Invalid dataset file: {relative_path}")
-    return real_file
-
-
-def available_devices() -> list[str]:
-    found = ["cuda"] if torch.cuda.is_available() else []
-    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-        found.append("mps")
-    return found + ["cpu"]
 
 
 def pick_device(requested: str) -> str:
@@ -90,40 +62,10 @@ def pick_device(requested: str) -> str:
     return device
 
 
-def square_crops(img: Image.Image) -> list[Image.Image]:
-    """Landscape image -> left (0,0,h,h) and right (w-h,0,w,h) squares, which together cover the full width.
-    Square or portrait images are returned as the single original."""
-    w, h = img.size
-    if w > h:
-        return [img.crop((0, 0, h, h)), img.crop((w - h, 0, w, h))]
-    return [img]
-
-
-def image_crops(img: Image.Image, mode: str) -> list[Image.Image]:
-    return square_crops(img) if mode == LR_SQUARE_CROP_MEAN else [img]
-
-
-def combine_crops(features: torch.Tensor, counts: list[int]) -> torch.Tensor:
-    """features holds one row per crop, grouped by image (counts[i] rows for image i).
-    L2-normalize each crop, average per image, L2-normalize again -> one unit vector per image."""
-    features = features / features.norm(dim=-1, keepdim=True)
-    means = torch.stack([group.mean(dim=0) for group in features.split(counts)])
-    return means / means.norm(dim=-1, keepdim=True)
-
-
 def check_stored(done: int, skipped: int, root: Path) -> None:
     """Every file skipped and none stored almost always means a wrong data root, not bad files: fail the run."""
     if done == 0 and skipped > 0:
         sys.exit(f"All {skipped} files were skipped and none stored. Check --root / NUSCENES_ROOT (now {root}).")
-
-
-def load_model(device: str):
-    import open_clip
-
-    model, _, preprocess = open_clip.create_model_and_transforms(MODEL_NAME, pretrained=PRETRAINED, device=device)
-    model.eval()
-    tokenizer = open_clip.get_tokenizer(MODEL_NAME)
-    return model, preprocess, tokenizer
 
 
 def validate_modes(source: str, sink: str, out: str | None, overwrite: bool) -> str | None:
@@ -337,8 +279,7 @@ def search(args) -> None:
     """Text -> image sanity check: encode the query with the same CLIP model and list the nearest camera images."""
     device = pick_device(args.device)
     model, _, tokenizer = load_model(device)
-    q = model.encode_text(tokenizer([args.search]).to(device)).float()
-    q = (q / q.norm(dim=-1, keepdim=True))[0].cpu()
+    q = encode_text(model, tokenizer, args.search, device)
     with connect() as conn:
         dataset_id = find_dataset(conn, args.version)
         rows = conn.execute(
