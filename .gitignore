@@ -85,3 +85,9 @@ out/
 !.env.example
 __pycache__/
 *.pyc
+.DS_Store
+
+# Python venvs, local tool output
+.venv*/
+Claude outputs/
+graphify-out/
