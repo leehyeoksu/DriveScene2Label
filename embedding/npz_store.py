@@ -5,8 +5,9 @@
   part-00001.npz     tokens: unicode array (N,), vectors: float32 (N, embed_dim), L2-normalized rows
 
 Parts are written to a temporary file and renamed, so a part either exists whole or not at all. A part that still
-cannot be read (copied half-way, disk full) is reported and treated as missing: its tokens are computed again on
-resume and import_results.py rejects it.
+cannot be read (copied half-way, disk full, Drive sync cut off) is renamed to part-NNNNN.npz.corrupt when the
+embedder resumes, and its tokens are computed again into a new part. import_results.py ignores *.corrupt files and
+rejects a broken part that was never renamed.
 """
 from __future__ import annotations
 
@@ -25,6 +26,8 @@ MANIFEST_FILE = "manifest.json"
 # Fields that must match to append to an existing folder. env (device, versions, host) may differ between runs.
 MANIFEST_KEYS = ("format_version", "dataset", "model_name", "preprocess", "embed_dim")
 PART_PATTERN = re.compile(r"part-(\d{5})\.npz")
+CORRUPT_PATTERN = re.compile(r"part-(\d{5})\.npz\.corrupt")
+CORRUPT_SUFFIX = ".corrupt"
 
 
 class ManifestMismatch(Exception):
@@ -67,6 +70,23 @@ def iter_parts(out_dir: Path) -> Iterator[tuple[Path, np.ndarray, np.ndarray] | 
             yield path, tokens, vectors
 
 
+def corrupt_files(out_dir: Path) -> list[Path]:
+    return sorted(p for p in Path(out_dir).iterdir() if CORRUPT_PATTERN.fullmatch(p.name))
+
+
+def quarantine_corrupt(out_dir: Path) -> list[Path]:
+    """Rename unreadable parts to part-NNNNN.npz.corrupt (kept for inspection, ignored by import). Returns new paths."""
+    moved = []
+    for path, *rest in iter_parts(out_dir):
+        if isinstance(rest[0], Exception):
+            target = path.with_name(path.name + CORRUPT_SUFFIX)
+            os.replace(path, target)
+            print(f"  warning: unreadable {path.name} ({rest[0]}); renamed to {target.name}, its images will be "
+                  f"embedded again", file=sys.stderr)
+            moved.append(target)
+    return moved
+
+
 def existing_tokens(out_dir: Path) -> set[str]:
     done = set()
     for path, *rest in iter_parts(out_dir):
@@ -78,9 +98,10 @@ def existing_tokens(out_dir: Path) -> set[str]:
 
 
 def write_part(out_dir: Path, tokens: list[str], vectors: np.ndarray) -> Path:
-    """Write the next part-NNNNN.npz (after the highest existing number, broken parts included)."""
+    """Write the next part-NNNNN.npz (after the highest existing number, broken and .corrupt parts included)."""
     out_dir = Path(out_dir)
     numbers = [int(PART_PATTERN.fullmatch(p.name).group(1)) for p in part_paths(out_dir)]
+    numbers += [int(CORRUPT_PATTERN.fullmatch(p.name).group(1)) for p in corrupt_files(out_dir)]
     path = out_dir / f"part-{max(numbers, default=0) + 1:05d}.npz"
     tmp = path.with_name(path.name + ".tmp")
     with open(tmp, "wb") as f:

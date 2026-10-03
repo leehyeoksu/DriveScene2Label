@@ -214,6 +214,11 @@ def embed_to_db(args, root: Path, device: str) -> None:
     model_id = model_key(MODEL_NAME, PRETRAINED)
     with connect() as conn:
         dataset_id = find_dataset(conn, args.version)
+        if args.scene and conn.execute("SELECT 1 FROM scene WHERE dataset_id=%s AND name=%s",
+                                       (dataset_id, args.scene)).fetchone() is None:
+            names = [r[0] for r in conn.execute("SELECT name FROM scene WHERE dataset_id=%s ORDER BY name LIMIT 5",
+                                                (dataset_id,))]
+            sys.exit(f"scene {args.scene!r} is not in {args.version} (e.g. {', '.join(names)})")
         rows = pending_files(conn, dataset_id, model_id, args.preprocess, args.include_sweeps, args.overwrite, args.scene,
                              args.limit)
         print(f"{len(rows)} camera files to embed with {model_id} ({args.preprocess}) on {device} (dataset id {dataset_id})")
@@ -240,12 +245,13 @@ def embed_to_files(args, root: Path, device: str) -> None:
     out = Path(args.out)
     try:
         targets = targets_from_nuscenes(root, args.version, include_sweeps=args.include_sweeps, scene=args.scene)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         sys.exit(str(e))
     try:
         npz_store.open_output(out, build_manifest(args.version, args.preprocess, device))
     except npz_store.ManifestMismatch as e:
         sys.exit(str(e))
+    npz_store.quarantine_corrupt(out)
     have = npz_store.existing_tokens(out)
     rows = [(t.token, t.relative_path) for t in targets if t.token not in have]
     if args.limit:

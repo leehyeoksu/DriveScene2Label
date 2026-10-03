@@ -33,6 +33,9 @@ def load_tables(root: Path, version: str) -> dict[str, dict[str, dict]]:
 def targets_from_nuscenes(root: Path, version: str, *, include_sweeps: bool = False,
                           scene: str | None = None) -> list[Target]:
     t = load_tables(root, version)
+    if scene is not None and scene not in {s["name"] for s in t["scene"].values()}:
+        names = sorted(s["name"] for s in t["scene"].values())
+        raise ValueError(f"scene {scene!r} is not in {version} ({len(names)} scenes, e.g. {', '.join(names[:5])})")
     picked = []
     for sd in t["sample_data"].values():
         sensor = t["sensor"][t["calibrated_sensor"][sd["calibrated_sensor_token"]]["sensor_token"]]

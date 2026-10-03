@@ -56,3 +56,8 @@ def test_scene_filter(fake_root):
 def test_missing_version_dir_raises(tmp_path):
     with pytest.raises(FileNotFoundError, match="v1.0-mini"):
         targets_from_nuscenes(tmp_path, "v1.0-mini")
+
+
+def test_unknown_scene_raises(fake_root):
+    with pytest.raises(ValueError, match="scene-zzz"):
+        targets_from_nuscenes(fake_root, "v1.0-mini", scene="scene-zzz")

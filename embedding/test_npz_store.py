@@ -38,3 +38,16 @@ def test_nonempty_folder_without_manifest_refused(tmp_path):
     (tmp_path / "notes.txt").write_text("someone else's files")
     with pytest.raises(ManifestMismatch, match="no manifest.json"):
         open_output(tmp_path, M)
+
+
+def test_quarantine_renames_corrupt_part(tmp_path):
+    from npz_store import corrupt_files, quarantine_corrupt
+    open_output(tmp_path, M); write_part(tmp_path, ["a"], unit(1)); write_part(tmp_path, ["b"], unit(1))
+    (tmp_path / "part-00002.npz").write_bytes(b"truncated")
+    moved = quarantine_corrupt(tmp_path)
+    assert [p.name for p in moved] == ["part-00002.npz.corrupt"] and moved[0].exists()
+    assert not (tmp_path / "part-00002.npz").exists()
+    assert all(not isinstance(x[1], Exception) for x in iter_parts(tmp_path))  # the import no longer sees it
+    assert corrupt_files(tmp_path) == moved
+    assert write_part(tmp_path, ["b"], unit(1)).name == "part-00003.npz"  # its number is not reused
+    assert quarantine_corrupt(tmp_path) == []  # nothing left to move

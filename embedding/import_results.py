@@ -5,7 +5,7 @@
 DIR is an embed_images.py --sink file folder (manifest.json + part-*.npz). The manifest is checked first and the
 dataset must already be in the catalog; nothing is written until both pass. Each part is then checked on its own
 (shape, float32, finite, unit length, no duplicate tokens): a broken or invalid part is rejected with its reason and
-the rest still load. Tokens that are not in sample_data are counted and skipped. Rows are upserted and committed per
+the rest still load. part-*.npz.corrupt files (set aside by the embedder on resume) are ignored. Tokens that are not in sample_data are counted and skipped. Rows are upserted and committed per
 part, so importing the same folder again leaves the same rows and values.
 
 Exit 1 when a part was rejected, when there are no parts, or when parts exist but nothing was stored.
@@ -136,6 +136,9 @@ def main() -> None:
         print(f"  unknown tokens (not in sample_data), e.g.: {', '.join(report.unknown_examples)}")
     for reason in report.rejected_parts[:EXAMPLES]:
         print(f"  rejected {reason}")
+    corrupt = npz_store.corrupt_files(args.dir)
+    if corrupt:
+        print(f"  ignored {len(corrupt)} *.corrupt file(s) set aside by the embedder (their images were embedded again)")
     if report.rejected_parts or report.parts == 0 or report.inserted + report.updated == 0:
         if report.parts == 0:
             print(f"  no part-*.npz files in {args.dir}")

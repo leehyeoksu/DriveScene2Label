@@ -162,7 +162,8 @@ DB가 없는 곳(Colab, 다른 PC, 나중의 AWS)에서는 nuScenes JSON으로 �
 
 - 결과 폴더: `manifest.json`(모델·전처리·데이터셋·실행 환경)과 `part-00001.npz`, `part-00002.npz` …(part 하나에 256장, `tokens`와 float32 `vectors`)
 - 다른 모델이나 전처리로 만든 폴더에 이어서 쓰려고 하면 거부합니다. 새 `--out` 폴더를 쓰세요.
-- 끊기면 7번을 **같은 `--out`으로 다시 실행**하면 이어서 처리합니다. 이미 part에 들어 있는 이미지는 건너뛰고, 쓰다가 깨진 part의 이미지는 다시 계산합니다.
+- 끊기면 7번을 **같은 `--out`으로 다시 실행**하면 이어서 처리합니다. 이미 part에 들어 있는 이미지는 건너뜁니다. 쓰다가 깨진 part는 `part-NNNNN.npz.corrupt`로 이름을 바꿔 두고 그 이미지를 다시 계산합니다. importer는 `.corrupt` 파일을 무시합니다.
+- `--scene`에 없는 scene 이름을 주면 에러(exit 1)로 끝납니다.
 
 Colab 셀 순서:
 
