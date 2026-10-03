@@ -2,7 +2,7 @@
 
 Spring Boot 4.1.1 / Java 21 / Spring Data JDBC / PostgreSQL로 nuScenes 원본 정보를 저장하고 조회합니다.
 사진·LiDAR·지도 파일은 원래 폴더에 두고, DB에는 상대경로와 장면·센서·위치·정답 박스 정보를 저장합니다.
-현재 범위는 원본 데이터 조회입니다. VESPA 실행, 예측 라벨 저장, 3D 뷰어는 아직 구현하지 않았습니다.
+현재 범위는 원본 데이터 조회와 카메라 이미지 CLIP 임베딩(pgvector)입니다. VESPA 실행, 예측 라벨 저장, 3D 뷰어는 아직 구현하지 않았습니다.
 
 ## 먼저 실행하기 (Ubuntu / WSL 터미널)
 
@@ -64,6 +64,8 @@ ID는 DB가 생성한 숫자이고, `token`은 nuScenes 원본 식별자입니�
 | `.../api` | HTTP 조회와 파일 응답 |
 | `.../storage` | 데이터 루트 안의 파일 경로 확인 |
 | `docs/queries.sql` | 직접 실행할 수 있는 테이블 조회 SQL |
+| `src/main/resources/db/migration/V2__image_embedding.sql` | pgvector 확장과 `image_embedding` 테이블 (768차원) |
+| `embedding/embed_images.py` | 카메라 이미지를 CLIP으로 임베딩해 DB에 저장 (`scripts/embed.sh`로 실행) |
 
 Spring Data JDBC를 사용하며 JPA는 사용하지 않습니다. `@Table`, `@Id`로 객체를 매핑하고, 조회는 Repository 및 JdbcClient, 대량 입력은 NamedParameterJdbcTemplate으로 수행합니다.
 테이블 변경은 Java 객체를 바꾸는 것만으로 반영되지 않습니다. 후속 `V2__...sql` 등의 마이그레이션을 추가해야 합니다. 적용된 V1 파일은 수정하지 마세요.
@@ -110,8 +112,51 @@ Dataset
 | `GET /api/sensor-files/{id}/calibration` | 센서 캘리브레이션 |
 | `GET /api/sensor-files/{id}/pose` | 차량 위치·회전 |
 | `GET /api/maps/{id}/content` | 지도 PNG |
+| `GET /api/datasets/{id}/embeddings` | 모델·전처리별 저장된 이미지 임베딩 개수 |
+| `GET /api/sensor-files/{id}/similar?limit=10&excludeSameScene=false` | 이 카메라 이미지와 가장 비슷한 이미지 (코사인 거리 오름차순), limit 1~100. `modelName`·`preprocess`를 생략하면 `application.properties`의 기본값 |
 
 존재하지 않는 ID는 404, 잘못된 페이지 범위는 400을 반환합니다. 파일 경로를 직접 요청받지 않고 DB ID로 찾으며, 루트 밖의 경로와 외부를 가리키는 심볼릭 링크는 차단합니다.
+
+## 이미지 임베딩 (CLIP + pgvector)
+
+키프레임 카메라 이미지(프레임당 6장)를 CLIP `ViT-L-14-quickgelu/openai`로 768차원 벡터로 바꿔 `image_embedding` 테이블에 저장합니다. 행은 (카메라 파일, `model_name`, `preprocess`)마다 하나이며, 모델이나 전처리가 다른 벡터끼리는 비교하지 않습니다. 자연어 장면 검색(텍스트 → 이미지)과 유사 장면 검색의 기반입니다.
+
+DB와 Spring은 Docker(아래 "Docker로 실행하기")로, 임베딩 계산은 호스트의 Python venv로 실행합니다. 호스트에서 돌려야 NVIDIA GPU(cuda)나 Apple Silicon GPU(mps)를 그대로 쓸 수 있습니다. 임베딩 스크립트는 Docker DB에 `127.0.0.1:55433`(compose.yml의 포트 매핑, 루프백 전용)으로 접속합니다.
+
+```bash
+docker compose up -d db           # pgvector 포함 PostgreSQL 16
+# 최초 1회: import (Flyway V2가 image_embedding 테이블 생성). "Docker로 실행하기" 참고
+bash scripts/embed.sh             # 임베딩 계산·저장 (.venv 생성은 최초 1회)
+bash scripts/embed.sh --search "rainy night intersection" --open   # 텍스트로 확인, 결과 사진을 브라우저로
+```
+
+- `embed.sh`는 `.env`에서 DB 이름·사용자·비밀번호(`POSTGRES_*`)와 데이터 경로(`NUSCENES_HOST_PATH`)를 읽습니다. 다른 파일을 쓰려면 `ENV_FILE=경로 bash scripts/embed.sh`. 데이터 경로는 `NUSCENES_ROOT` → `NUSCENES_HOST_PATH` → `./v1.0-mini` 순서로 찾습니다.
+- 최초 실행 시 `.venv`에 `embedding/requirements.txt`(버전 고정)를 설치하고, 첫 임베딩에서 CLIP 가중치(약 1.7GB)를 `~/.cache/huggingface`에 받습니다. Python 3.12·3.14에서 확인했습니다. 다른 인터프리터는 `PYTHON=python3.12 bash scripts/embed.sh`.
+- 디바이스는 cuda → mps → cpu 순서로 자동 선택하고, 시작할 때 `Device: mps (auto; arm64; torch 2.14.1)`처럼 출력합니다. `--device cpu|mps|cuda`로 강제할 수 있으며, 없는 디바이스를 지정하면 바로 종료합니다.
+- 기본 전처리는 `lr-square-crop-mean`입니다. 16:9 이미지에서 왼쪽·오른쪽 h×h 정사각형을 각각 임베딩해 평균합니다. 기존 `openclip-eval-224-centercrop`(가운데 한 장)보다 v1.0-mini 밤/낮 검색 mAP가 0.915 → 0.946로 높아 기본값으로 정했습니다. Spring의 기본값은 `application.properties`의 `embedding.preprocess`입니다.
+- mps·cpu로 계산한 벡터의 코사인 유사도는 최소 0.9999998(같은 이미지 64장)이므로 한 테이블에 섞어 써도 됩니다.
+- 이미 임베딩된 파일은 건너뜁니다. 배치마다 커밋하므로 중간에 끊겨도 다시 실행하면 이어서 합니다. 다시 계산하려면 `--overwrite`.
+- 옵션: `--scene scene-0061`(한 씬만), `--limit 20`(시험용), `--include-sweeps`(비키프레임 포함, 약 6배), `--device cpu`, `--batch-size 16`, `--preprocess openclip-eval-224-centercrop`. 전체는 `bash scripts/embed.sh --help`.
+- 테스트: `.venv/bin/python -m pytest embedding` (모델 가중치·DB 없이 전처리만 검사).
+- 벡터는 L2 정규화해 저장하고 코사인 거리(`<=>`)로 검색합니다. (카메라 파일, `model_name`, `preprocess`)마다 한 행입니다. 차원이 다른 모델을 추가하려면 새 마이그레이션이 필요합니다.
+- Spring과 같은 경로 제한(루트 밖·절대경로 차단)을 적용합니다.
+
+### NVIDIA GPU(CUDA)에서 실행
+
+PyPI의 기본 torch가 GPU에 맞지 않을 수 있으므로, `embed.sh`를 처음 실행하기 전에 CUDA 빌드 torch를 `.venv`에 먼저 설치합니다. 버전은 `requirements.txt`와 같아야 합니다. `torch==2.14.1` 고정은 `2.14.1+cu128` 같은 CUDA 빌드로도 충족되므로 `embed.sh`가 덮어쓰지 않습니다.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu128
+.venv/bin/python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+bash scripts/embed.sh             # Device: cuda (auto; NVIDIA GeForce RTX ...) 로 시작하면 정상
+```
+
+- **RTX 50 시리즈(Blackwell, sm_120)는 CUDA 12.8 이상으로 빌드된 torch가 필요합니다**(`cu128` 또는 그 이상의 인덱스). 그보다 오래된 CUDA 빌드는 `no kernel image is available` 오류를 냅니다. 사용 가능한 CUDA 인덱스는 [PyTorch 설치 페이지](https://pytorch.org/get-started/locally/)에서 해당 버전을 선택해 확인합니다.
+- NVIDIA 드라이버가 해당 CUDA 버전을 지원해야 합니다(`nvidia-smi` 오른쪽 위 `CUDA Version`이 12.8 이상).
+- WSL에서는 Windows용 NVIDIA 드라이버만 설치하고 WSL 안에 리눅스 드라이버는 설치하지 않습니다.
+
+- 텍스트 → 벡터 변환은 모델이 필요하므로 Spring이 아니라 FastAPI(AI 서버)가 맡습니다. Spring은 저장된 벡터끼리의 유사도 조회(`/similar`)만 제공합니다.
 
 ## SQL로 직접 테이블 조회
 
@@ -126,13 +171,27 @@ DB 접속 주소는 `127.0.0.1:55432`, 데이터베이스와 사용자는 `drive
 
 ## 검증
 
+Docker만 있으면 됩니다(JDK·로컬 PostgreSQL·`.env` 불필요). Mac과 Ubuntu/WSL에서 같은 명령입니다.
+
+```bash
+bash scripts/docker-test.sh                                  # Spring 통합 테스트 (Gradle)
+bash scripts/docker-test.sh --tests '*similarImages*'        # 인자는 Gradle에 그대로 전달
+.venv/bin/python -m pytest embedding                         # 임베딩 전처리 테스트 (embed.sh로 .venv를 만든 뒤)
+```
+
+- `docker-test.sh`는 실행할 때마다 임시 PostgreSQL(`pgvector/pgvector:pg16-trixie`, compose의 db와 같은 이미지)과 JDK 21 컨테이너를 띄워 `./gradlew test`를 실행하고, 끝나면(실패해도) 둘 다 지웁니다. Compose의 db와 `postgres_data` volume은 건드리지 않습니다.
+- 테스트는 호스트 사용자 권한으로 실행하므로 `build/`가 root 소유가 되지 않습니다. Gradle 캐시는 `.gradle/docker-home`(Git·Docker 빌드 제외)에 두고 다음 실행에서 재사용합니다. 첫 실행은 Gradle·의존성 다운로드로 몇 분 걸립니다.
+- 결과 보고서: `build/reports/tests/test/index.html`. 실패하면 종료 코드가 0이 아닙니다.
+
+로컬 DB 방식(기존)도 그대로 사용할 수 있습니다.
+
 ```bash
 bash scripts/local-db.sh
 bash scripts/run-local.sh test
 ```
 
-실제 PostgreSQL의 별도 `drivescene_test` DB에서 Flyway와 JDBC 매핑, 중복 가져오기, 프레임·지도·GT 조회, 파일 응답, 오류 응답, 경로 제한을 검증합니다. 테스트 데이터는 직접 만든 작은 가상 데이터이며 원본 이미지가 아닙니다.
-다른 테스트 DB를 사용할 경우 `TEST_DB_URL`, `TEST_DB_USERNAME`, `TEST_DB_PASSWORD`를 설정하세요.
+별도 `drivescene_test` DB(Docker 방식은 임시 컨테이너, 로컬 방식은 `.local/postgres`)에서 Flyway와 JDBC 매핑, 중복 가져오기, 프레임·지도·GT 조회, 파일 응답, 오류 응답, 경로 제한을 검증합니다. 테스트 데이터는 직접 만든 작은 가상 데이터이며 원본 이미지가 아닙니다.
+다른 테스트 DB를 사용할 경우 `TEST_DB_URL`, `TEST_DB_USERNAME`, `TEST_DB_PASSWORD`를 설정하세요(`docker-test.sh`는 임시 DB 값으로 자동 설정).
 
 개발 시 실제 nuScenes mini를 등록하고 첫 프레임의 JPG·LiDAR·지도 HTTP 응답이 원본 파일과 바이트 단위로 동일함을 확인했습니다.
 
@@ -173,7 +232,7 @@ docker compose up app
 앱은 UID 10001의 일반 사용자로 실행하므로 원본 폴더를 탐색하고 파일을 읽을 권한이 필요합니다.
 
 이미 로컬 Spring 서버가 8080을 사용 중이면 해당 서버를 종료하거나 `.env`의 `APP_PORT=8081`로 변경하세요.
-포트를 바꾸면 아래 API 주소도 해당 포트로 바꿉니다. Docker DB는 호스트 포트를 열지 않으므로 기존 DB의 55432와 충돌하지 않습니다.
+포트를 바꾸면 아래 API 주소도 해당 포트로 바꿉니다. Docker DB는 임베딩 스크립트용으로 `127.0.0.1:55433`만 열며(루프백 전용), 기존 로컬 DB의 55432와 충돌하지 않습니다.
 
 최초 import 이후 일반 실행은 다음 한 줄입니다.
 
@@ -223,7 +282,7 @@ Compose는 프로젝트 이름을 접두사로 붙여 volume을 관리합니다.
 docker compose down -v
 ```
 
-`.env`의 DB 이름·사용자·비밀번호는 새 DB volume을 초기화할 때 사용합니다.
+`.env`의 DB 이름·사용자·비밀번호는 새 DB volume을 초기화할 때 사용합니다. **volume을 만든 비밀번호를 잃어버리면 DB에 접속할 수 없으므로 `.env`를 지우지 마세요**(Git에는 올라가지 않으니 필요하면 따로 백업).
 기존 volume이 있다면 `.env`의 비밀번호만 변경해도 DB 비밀번호가 자동 변경되지는 않습니다.
 
 ### 추가한 파일과 동작 원리
@@ -231,9 +290,10 @@ docker compose down -v
 | 파일 | 역할 |
 |---|---|
 | `Dockerfile` | JDK 21과 Gradle Wrapper로 bootJar를 만들고, Java 21 JRE 이미지에 실행 JAR만 복사 |
-| `compose.yml` | app/db 연결, DB healthcheck, 포트, 환경변수와 volume 설정 |
+| `compose.yml` | app/db 연결, DB healthcheck, 포트(app 8080, db 55433, 모두 127.0.0.1), 환경변수와 volume 설정. db는 pgvector 포함 이미지 |
 | `.dockerignore` | 빌드 입력만 허용하여 로컬 DB·비밀번호·원본 데이터가 빌드 컨텍스트에 들어가지 않도록 제한 |
 | `.env.example` | 비밀번호·원본 경로·포트 설정 예시. 복사한 실제 `.env`는 기존 `.gitignore`에서 제외 |
+| `scripts/docker-test.sh` | 임시 pgvector DB + JDK 21 컨테이너로 Gradle 테스트 실행 후 정리 |
 
 - **이미지**는 실행에 필요한 파일을 담은 묶음이고, **컨테이너**는 그 이미지로 실행한 프로세스 환경입니다.
 - 두 컨테이너는 Compose 내부 네트워크에서 통신합니다. 앱의 DB 주소는 `jdbc:postgresql://db:5432/drivescene`입니다.
@@ -245,8 +305,8 @@ docker compose down -v
 - Dockerfile의 `ENTRYPOINT`가 `java -jar /app/app.jar`이므로 `compose run ... app` 뒤 옵션은 Spring에 전달됩니다.
   import 명령은 웹 서버 없이 실행하고 완료 후 종료합니다.
 - Flyway SQL, Spring 설정·API·import 코드, 기존 로컬 실행 스크립트는 변경하지 않았습니다.
-- 이미지 빌드는 DB가 필요한 통합 테스트를 실행하지 않습니다. 기존 회귀 테스트는 로컬 DB를 준비한 뒤
-  `bash scripts/run-local.sh test`로 실행합니다.
+- 이미지 빌드는 DB가 필요한 통합 테스트를 실행하지 않습니다. 테스트는 `bash scripts/docker-test.sh`로 실행합니다.
+  로컬 DB를 쓰는 경우 기존처럼 `bash scripts/run-local.sh test`도 됩니다("검증" 참고).
 
 참고: [Docker Compose 시작 순서](https://docs.docker.com/compose/how-tos/startup-order/),
 [Compose 서비스 설정](https://docs.docker.com/reference/compose-file/services/),

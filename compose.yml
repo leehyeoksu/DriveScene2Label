@@ -1,10 +1,14 @@
 services:
   db:
-    image: postgres:16
+    # PostgreSQL 16 with pgvector (V2__image_embedding.sql runs CREATE EXTENSION vector).
+    image: pgvector/pgvector:pg16-trixie
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-drivescene}
       POSTGRES_USER: ${POSTGRES_USER:-drivescene}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    # Loopback only: for scripts/embed.sh, which runs on the host (venv) to use the local GPU.
+    ports:
+      - "127.0.0.1:55433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

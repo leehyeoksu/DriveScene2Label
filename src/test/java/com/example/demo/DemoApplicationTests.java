@@ -100,4 +100,38 @@ class DemoApplicationTests {
   jdbc.sql("UPDATE dataset SET source_checksum='different' WHERE id=:id").param("id",dataset).update();
   assertThatThrownBy(()->importer.importDataset("v1.0-mini")).isInstanceOf(IllegalStateException.class).hasMessageContaining("different metadata");
  }
+ @Test void similarImagesAreOrderedByCosineDistance() throws Exception {
+  long dataset=importer.importDataset("v1.0-mini").datasetId();
+  var tokens=jdbc.sql("SELECT token FROM sample_data WHERE dataset_id=:id ORDER BY token").param("id",dataset).query(String.class).list();
+  // Synthetic 768-d vectors: file 0 and 1 point almost the same way, file 2 is orthogonal, file 3 has no embedding.
+  storeEmbedding(dataset,tokens.get(0),1.0,0.0);
+  storeEmbedding(dataset,tokens.get(1),0.9,0.1);
+  storeEmbedding(dataset,tokens.get(2),0.0,1.0);
+  mvc.perform(get("/api/sensor-files/{id}/similar",sensorFileId(dataset,tokens.get(0)))).andExpect(status().isOk())
+   .andExpect(jsonPath("$.length()").value(2))
+   .andExpect(jsonPath("$[0].token").value(tokens.get(1))).andExpect(jsonPath("$[1].token").value(tokens.get(2)));
+  mvc.perform(get("/api/sensor-files/{id}/similar?excludeSameScene=true",sensorFileId(dataset,tokens.get(0))))
+   .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
+  mvc.perform(get("/api/datasets/{id}/embeddings",dataset)).andExpect(status().isOk())
+   .andExpect(jsonPath("$.length()").value(1)).andExpect(jsonPath("$[0].modelName").value(MODEL_NAME))
+   .andExpect(jsonPath("$[0].preprocess").value(PREPROCESS)).andExpect(jsonPath("$[0].images").value(3));
+  // A different preprocess of the same model is a separate vector space: not used as a source or compared.
+  storeEmbedding(dataset,tokens.get(3),1.0,0.0,"other-preprocess");
+  mvc.perform(get("/api/sensor-files/{id}/similar?preprocess=other-preprocess",sensorFileId(dataset,tokens.get(3))))
+   .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
+  mvc.perform(get("/api/sensor-files/{id}/similar",sensorFileId(dataset,tokens.get(3)))).andExpect(status().isNotFound());
+  mvc.perform(get("/api/sensor-files/{id}/similar?limit=0",sensorFileId(dataset,tokens.get(0)))).andExpect(status().isBadRequest());
+ }
+ private static final String MODEL_NAME="ViT-L-14-quickgelu/openai";
+ private static final String PREPROCESS="lr-square-crop-mean";
+ private void storeEmbedding(long dataset, String token, double x, double y) { storeEmbedding(dataset,token,x,y,PREPROCESS); }
+ private void storeEmbedding(long dataset, String token, double x, double y, String preprocess) {
+  var v=new StringBuilder("[").append(x).append(',').append(y);
+  for(int i=2;i<768;i++) v.append(",0");
+  jdbc.sql("INSERT INTO image_embedding(dataset_id, sample_data_token, model_name, preprocess, embedding) VALUES (:d,:t,:m,:p,CAST(:v AS vector))")
+   .param("d",dataset).param("t",token).param("m",MODEL_NAME).param("p",preprocess).param("v",v.append(']').toString()).update();
+ }
+ private long sensorFileId(long dataset, String token) {
+  return jdbc.sql("SELECT id FROM sample_data WHERE dataset_id=:d AND token=:t").param("d",dataset).param("t",token).query(Long.class).single();
+ }
 }

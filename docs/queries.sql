@@ -36,3 +36,18 @@ FROM gt_annotation a
 JOIN object_instance i ON i.dataset_id=a.dataset_id AND i.token=a.instance_token
 JOIN category c ON c.dataset_id=i.dataset_id AND c.token=i.category_token
 ORDER BY a.id LIMIT 10;
+
+-- Image embeddings per model and preprocess (CLIP, filled by scripts/embed.sh).
+SELECT dataset_id, model_name, preprocess, count(*) AS images FROM image_embedding
+GROUP BY dataset_id, model_name, preprocess ORDER BY dataset_id, model_name, preprocess;
+
+-- 5 camera images most similar to the first stored embedding of the default model and preprocess
+-- (embedding.model-name / embedding.preprocess). Cosine distance, lower = closer.
+-- Only rows with the same model_name and preprocess are comparable.
+SELECT sd.relative_path, e.embedding <=> q.embedding AS distance
+FROM image_embedding e
+JOIN (SELECT dataset_id, model_name, preprocess, embedding FROM image_embedding
+      WHERE model_name='ViT-L-14-quickgelu/openai' AND preprocess='lr-square-crop-mean' ORDER BY id LIMIT 1) q
+  ON q.dataset_id=e.dataset_id AND q.model_name=e.model_name AND q.preprocess=e.preprocess
+JOIN sample_data sd ON sd.dataset_id=e.dataset_id AND sd.token=e.sample_data_token
+ORDER BY distance LIMIT 5;
