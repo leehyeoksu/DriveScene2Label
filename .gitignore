@@ -91,3 +91,6 @@ __pycache__/
 .venv*/
 Claude outputs/
 graphify-out/
+
+# Small reference vectors for embed_images.py --check-reference (committed on purpose)
+!embedding/fixtures/*.npz
