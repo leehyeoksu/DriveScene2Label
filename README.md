@@ -156,6 +156,48 @@ bash scripts/embed.sh             # Device: cuda (auto; NVIDIA GeForce RTX ...) 
 - NVIDIA 드라이버가 해당 CUDA 버전을 지원해야 합니다(`nvidia-smi` 오른쪽 위 `CUDA Version`이 12.8 이상).
 - WSL에서는 Windows용 NVIDIA 드라이버만 설치하고 WSL 안에 리눅스 드라이버는 설치하지 않습니다.
 
+### Colab/외부 GPU에서 실행 (파일 모드)
+
+DB가 없는 곳(Colab, 다른 PC, 나중의 AWS)에서는 nuScenes JSON으로 대상 목록을 만들고 결과를 npz 파일로 씁니다. 결과 폴더를 DB가 있는 곳으로 가져와 `import_results.py`로 넣습니다. 파일 모드는 DB에 접속하지 않습니다.
+
+- 결과 폴더: `manifest.json`(모델·전처리·데이터셋·실행 환경)과 `part-00001.npz`, `part-00002.npz` …(part 하나에 256장, `tokens`와 float32 `vectors`)
+- 다른 모델이나 전처리로 만든 폴더에 이어서 쓰려고 하면 거부합니다. 새 `--out` 폴더를 쓰세요.
+- 끊기면 7번을 **같은 `--out`으로 다시 실행**하면 이어서 처리합니다. 이미 part에 들어 있는 이미지는 건너뛰고, 쓰다가 깨진 part의 이미지는 다시 계산합니다.
+
+Colab 셀 순서:
+
+```bash
+# 1. Drive 마운트 (Python 셀)
+#    from google.colab import drive; drive.mount('/content/drive')
+# 2. 데이터는 로컬 디스크에 풀어서 사용 (Drive에서 바로 읽으면 매우 느림)
+mkdir -p /content/nuscenes && tar -xzf /content/drive/MyDrive/nuscenes/v1.0-mini.tgz -C /content/nuscenes
+# 3. 레포 clone (브랜치 지정)
+git clone -b feature/embedding-file-mode https://github.com/leehyeoksu/DriveScene2Label.git && cd DriveScene2Label
+# 4. 의존성 (requirements.txt의 고정 버전)
+pip install -r embedding/requirements.txt
+# 5. 데이터 경로 (samples/, v1.0-mini/ 가 바로 아래에 있어야 함)
+export NUSCENES_ROOT=/content/nuscenes
+# 6. 이 환경의 벡터가 DB의 벡터와 같은지 확인. FAIL(exit 1)이면 여기서 중단
+python embedding/embed_images.py --check-reference embedding/fixtures/reference.npz
+# 7. 임베딩 → npz (Drive에 저장)
+python embedding/embed_images.py --source nuscenes --sink file --out /content/drive/MyDrive/nuscenes/embeddings/<날짜>-lr
+```
+
+Colab 셀에서 `export`는 다음 셀로 이어지지 않으니, 5~7번은 한 셀에 쓰거나 `%env NUSCENES_ROOT=/content/nuscenes`를 쓰세요.
+
+8. DB가 있는 곳에서 결과 폴더를 내려받아 넣습니다(`.env`의 DB 정보 사용).
+
+```bash
+set -a; source .env; set +a
+export PGHOST=127.0.0.1 PGPORT=55433 PGUSER="$POSTGRES_USER" PGDATABASE="$POSTGRES_DB" PGPASSWORD="$POSTGRES_PASSWORD"
+.venv/bin/python embedding/import_results.py embeddings <폴더> --dry-run   # 확인만
+.venv/bin/python embedding/import_results.py embeddings <폴더>
+```
+
+- `--check-reference`는 각 scene 첫 키프레임의 카메라 6장(60장, `embedding/fixtures/reference.npz`)을 다시 계산해 코사인 최솟값이 0.9999 이상인지 봅니다. 기준 파일은 DB의 벡터로 만들었습니다(`embedding/make_reference.py`).
+- importer는 manifest(형식 버전, 768차원, nuScenes)를 먼저 확인하고, dataset이 DB에 없으면 아무것도 쓰지 않고 끝납니다. part마다 모양·float32·NaN·단위 길이·중복을 확인해 문제 있는 part만 거부하고, `sample_data`에 없는 token은 세기만 하고 넣지 않습니다. 같은 폴더를 다시 넣어도 결과가 같습니다(upsert).
+- 거부된 part가 있거나 저장된 행이 0개면 exit 1입니다.
+
 - 텍스트 → 벡터 변환은 모델이 필요하므로 Spring이 아니라 FastAPI(AI 서버)가 맡습니다. Spring은 저장된 벡터끼리의 유사도 조회(`/similar`)만 제공합니다.
 
 ## SQL로 직접 테이블 조회
