@@ -251,8 +251,11 @@ def embed_to_files(args, root: Path, device: str) -> None:
         npz_store.open_output(out, build_manifest(args.version, args.preprocess, device))
     except npz_store.ManifestMismatch as e:
         sys.exit(str(e))
+    npz_store.clear_completion(out)  # until this run ends, the folder is not a finished result
     npz_store.quarantine_corrupt(out)
     have = npz_store.existing_tokens(out)
+    target_tokens = {t.token for t in targets}
+    settings = {"version": args.version, "include_sweeps": args.include_sweeps, "scene": args.scene}
     rows = [(t.token, t.relative_path) for t in targets if t.token not in have]
     if args.limit:
         rows = rows[:args.limit]
@@ -260,6 +263,7 @@ def embed_to_files(args, root: Path, device: str) -> None:
           f"-> {out} ({len(targets)} targets, {len(have)} already in the folder)")
     if not rows:
         print("Done: 0 stored, 0 skipped")
+        report_completion(npz_store.write_completion(out, target_tokens, settings))
         return
     started, done, skipped = time.time(), 0, 0
     buf_tokens: list[str] = []
@@ -287,6 +291,12 @@ def embed_to_files(args, root: Path, device: str) -> None:
         flush(len(buf_tokens))
     print(f"Done: {done} stored, {skipped} skipped, {time.time() - started:.0f}s")
     check_stored(done, skipped, root)
+    report_completion(npz_store.write_completion(out, target_tokens, settings))
+
+
+def report_completion(record: dict) -> None:
+    state = "complete" if record["complete"] else "partial (run again with the same --out to finish)"
+    print(f"Folder holds {record['present']} of {record['targets']} targets: {state}")
 
 
 def min_cosine(a: np.ndarray, b: np.ndarray) -> float:

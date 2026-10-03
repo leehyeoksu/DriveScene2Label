@@ -23,3 +23,12 @@ def test_validate_manifest_ok_and_missing_keys():
     assert validate_manifest({k: v for k, v in M.items() if k != "preprocess"})
     assert validate_manifest({**M, "format_version": 2})
     assert validate_manifest({**M, "dataset": {"name": "Waymo", "version": "x"}})
+
+
+def test_completion_problem():
+    from import_results import completion_problem
+    done = {"targets": 3, "present": 3, "complete": True}
+    assert completion_problem(done, {"a", "b", "c"}) is None
+    assert "complete.json" in completion_problem(None, {"a"})                    # run unfinished or not synced
+    assert "2 of 3" in completion_problem({**done, "present": 2, "complete": False}, {"a", "b"})  # partial run
+    assert "missing" in completion_problem(done, {"a", "b"})                     # parts not synced yet

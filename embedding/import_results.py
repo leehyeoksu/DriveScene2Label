@@ -8,7 +8,9 @@ dataset must already be in the catalog; nothing is written until both pass. Each
 the rest still load. part-*.npz.corrupt files (set aside by the embedder on resume) are ignored. Tokens that are not in sample_data are counted and skipped. Rows are upserted and committed per
 part, so importing the same folder again leaves the same rows and values.
 
-Exit 1 when a part was rejected, when there are no parts, or when parts exist but nothing was stored.
+Exit 1 when a part was rejected, when there are no parts, when parts exist but nothing was stored, or when the folder
+is not a finished run (no complete.json, a partial run, or fewer images than the run recorded); --allow-partial
+accepts the last case.
 Uses the same PG* environment as embed_images.py.
 """
 from __future__ import annotations
@@ -66,6 +68,19 @@ def validate_part(tokens: np.ndarray, vectors: np.ndarray) -> list[str]:
     return errors
 
 
+def completion_problem(completion: dict | None, seen: set[str]) -> str | None:
+    """Why the folder may not be a finished result, or None. seen = tokens in the parts that passed validation."""
+    if completion is None:
+        return (f"no {npz_store.COMPLETE_FILE}: the embedding run has not finished, or the folder was copied before "
+                "Drive finished syncing")
+    if not completion["complete"]:
+        return f"the run stored {completion['present']} of {completion['targets']} targets (partial run, e.g. --limit)"
+    if len(seen) < completion["present"]:
+        return (f"the run recorded {completion['present']} images but valid parts hold {len(seen)}: parts are missing "
+                "(Drive still syncing?) or were rejected")
+    return None
+
+
 @dataclass
 class ImportReport:
     inserted: int = 0
@@ -74,6 +89,7 @@ class ImportReport:
     rejected_parts: list[str] = field(default_factory=list)
     parts: int = 0
     unknown_examples: list[str] = field(default_factory=list)
+    completion_problem: str | None = None
 
 
 def import_embeddings(conn, out_dir: Path, *, dry_run: bool = False) -> ImportReport:
@@ -88,6 +104,7 @@ def import_embeddings(conn, out_dir: Path, *, dry_run: bool = False) -> ImportRe
     dataset_id = find_dataset(conn, manifest["dataset"]["version"])
     model_name, preprocess = manifest["model_name"], manifest["preprocess"]
     report = ImportReport()
+    seen: set[str] = set()
     for path, *rest in npz_store.iter_parts(out_dir):
         report.parts += 1
         if isinstance(rest[0], Exception):
@@ -99,6 +116,7 @@ def import_embeddings(conn, out_dir: Path, *, dry_run: bool = False) -> ImportRe
             report.rejected_parts.append(f"{path.name}: " + "; ".join(errors))
             continue
         token_list = tokens.tolist()
+        seen.update(token_list)
         known = {r[0] for r in conn.execute(
             "SELECT token FROM sample_data WHERE dataset_id=%s AND token = ANY(%s)", (dataset_id, token_list))}
         existing = {r[0] for r in conn.execute(
@@ -116,6 +134,7 @@ def import_embeddings(conn, out_dir: Path, *, dry_run: bool = False) -> ImportRe
             conn.commit()  # per part: an interrupted import keeps the parts already loaded
     if dry_run:
         conn.rollback()
+    report.completion_problem = completion_problem(npz_store.read_completion(out_dir), seen)
     return report
 
 
@@ -125,6 +144,8 @@ def main() -> None:
     e = sub.add_parser("embeddings", help="load an embed_images.py --sink file folder into image_embedding")
     e.add_argument("dir", type=Path)
     e.add_argument("--dry-run", action="store_true", help="check and count only; write nothing")
+    e.add_argument("--allow-partial", action="store_true",
+                   help="exit 0 even if the folder is not a finished run (no complete.json, or not all targets)")
     args = p.parse_args()
 
     with connect() as conn:
@@ -139,7 +160,12 @@ def main() -> None:
     corrupt = npz_store.corrupt_files(args.dir)
     if corrupt:
         print(f"  ignored {len(corrupt)} *.corrupt file(s) set aside by the embedder (their images were embedded again)")
-    if report.rejected_parts or report.parts == 0 or report.inserted + report.updated == 0:
+    if report.completion_problem:
+        loaded = "" if args.dry_run else "the valid parts were still loaded; "
+        print(f"  not a finished result: {report.completion_problem}" + ("" if args.allow_partial else
+              f" ({loaded}use --allow-partial to accept this)"))
+    if report.rejected_parts or report.parts == 0 or report.inserted + report.updated == 0 or \
+            (report.completion_problem and not args.allow_partial):
         if report.parts == 0:
             print(f"  no part-*.npz files in {args.dir}")
         sys.exit(1)

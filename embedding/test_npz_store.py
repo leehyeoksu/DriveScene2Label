@@ -51,3 +51,16 @@ def test_quarantine_renames_corrupt_part(tmp_path):
     assert corrupt_files(tmp_path) == moved
     assert write_part(tmp_path, ["b"], unit(1)).name == "part-00003.npz"  # its number is not reused
     assert quarantine_corrupt(tmp_path) == []  # nothing left to move
+
+
+def test_completion_marker_records_whether_all_targets_are_present(tmp_path):
+    from npz_store import clear_completion, read_completion, write_completion
+    open_output(tmp_path, M); write_part(tmp_path, ["a", "b"], unit(2))
+    assert read_completion(tmp_path) is None
+    write_completion(tmp_path, {"a", "b", "c"}, {"scene": None})
+    c = read_completion(tmp_path)
+    assert (c["targets"], c["present"], c["complete"], c["scene"]) == (3, 2, False, None)
+    write_part(tmp_path, ["c"], unit(1)); write_completion(tmp_path, {"a", "b", "c"}, {})
+    assert read_completion(tmp_path)["complete"] is True and read_completion(tmp_path)["present"] == 3
+    clear_completion(tmp_path)
+    assert read_completion(tmp_path) is None

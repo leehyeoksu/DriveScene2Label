@@ -3,6 +3,8 @@
 
   manifest.json      format_version, dataset {name, version}, model_name, preprocess, embed_dim, env
   part-00001.npz     tokens: unicode array (N,), vectors: float32 (N, embed_dim), L2-normalized rows
+  complete.json      written when a run ends: targets, present, complete (all targets stored). Removed while a run
+                     is in progress, so a folder copied mid-run (or still syncing from Drive) is not taken as finished
 
 Parts are written to a temporary file and renamed, so a part either exists whole or not at all. A part that still
 cannot be read (copied half-way, disk full, Drive sync cut off) is renamed to part-NNNNN.npz.corrupt when the
@@ -23,6 +25,7 @@ import numpy as np
 FORMAT_VERSION = 1
 PART_SIZE = 256  # images per part
 MANIFEST_FILE = "manifest.json"
+COMPLETE_FILE = "complete.json"
 # Fields that must match to append to an existing folder. env (device, versions, host) may differ between runs.
 MANIFEST_KEYS = ("format_version", "dataset", "model_name", "preprocess", "embed_dim")
 PART_PATTERN = re.compile(r"part-(\d{5})\.npz")
@@ -52,6 +55,29 @@ def open_output(out_dir: Path, manifest: dict) -> None:
     if diff:
         details = ", ".join(f"{k}: folder has {existing.get(k)!r}, this run {manifest.get(k)!r}" for k in diff)
         raise ManifestMismatch(f"{out_dir} was made with different settings ({details}); use a new --out folder")
+
+
+def write_json_atomic(path: Path, data: dict) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def read_completion(out_dir: Path) -> dict | None:
+    path = Path(out_dir) / COMPLETE_FILE
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def clear_completion(out_dir: Path) -> None:
+    (Path(out_dir) / COMPLETE_FILE).unlink(missing_ok=True)
+
+
+def write_completion(out_dir: Path, target_tokens: set[str], settings: dict) -> dict:
+    """Record how many of this run's targets the folder holds. settings: the run options that define the targets."""
+    present = len(target_tokens & existing_tokens(out_dir))
+    record = {"targets": len(target_tokens), "present": present, "complete": present == len(target_tokens), **settings}
+    write_json_atomic(Path(out_dir) / COMPLETE_FILE, record)
+    return record
 
 
 def part_paths(out_dir: Path) -> list[Path]:

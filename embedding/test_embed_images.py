@@ -109,3 +109,26 @@ def test_min_cosine_detects_drift():
     from testutil import unit
     v = unit(3); w = v.copy(); w[1] = -v[1]; assert ei.min_cosine(v, w) < ei.REFERENCE_MIN_COSINE
     assert ei.min_cosine(v, w) == pytest.approx(-1.0, abs=1e-6)  # row-wise: only the flipped row counts
+
+
+def test_file_run_writes_completion_only_when_all_targets_are_stored(tmp_path, monkeypatch):
+    import argparse
+    import npz_store
+    from testutil import make_fake_nuscenes, unit
+
+    def fake_encode(rows, root, mode, device, batch_size):  # no model: one unit vector per row
+        for start in range(0, len(rows), batch_size):
+            batch = rows[start:start + batch_size]
+            yield [t for t, _ in batch], torch.from_numpy(unit(len(batch))), 0
+
+    monkeypatch.setattr(ei, "encode_batches", fake_encode)
+    root, out = make_fake_nuscenes(tmp_path / "data"), tmp_path / "out"
+    args = argparse.Namespace(out=str(out), version="v1.0-mini", preprocess=ei.LR_SQUARE_CROP_MEAN, include_sweeps=False,
+                              scene=None, limit=3, batch_size=2)
+    ei.embed_to_files(args, root, "cpu")
+    c = npz_store.read_completion(out)
+    assert (c["targets"], c["present"], c["complete"]) == (4, 3, False)
+    args.limit = None
+    ei.embed_to_files(args, root, "cpu")  # resume: the 4th target
+    assert npz_store.read_completion(out)["complete"] is True
+    assert len(npz_store.existing_tokens(out)) == 4

@@ -165,28 +165,30 @@ DB가 없는 곳(Colab, 다른 PC, 나중의 AWS)에서는 nuScenes JSON으로 �
 - 끊기면 7번을 **같은 `--out`으로 다시 실행**하면 이어서 처리합니다. 이미 part에 들어 있는 이미지는 건너뜁니다. 쓰다가 깨진 part는 `part-NNNNN.npz.corrupt`로 이름을 바꿔 두고 그 이미지를 다시 계산합니다. importer는 `.corrupt` 파일을 무시합니다.
 - `--scene`에 없는 scene 이름을 주면 에러(exit 1)로 끝납니다.
 
-Colab 셀 순서:
+Colab 셀 순서(노트북 셀 하나에 하나씩). Colab의 `!` 명령은 줄마다 새 셸에서 실행되어 `cd`·`export`가 다음 줄로 이어지지 않습니다. 그래서 폴더 이동은 `%cd`, 환경변수는 `%env`로 씁니다.
 
-```bash
-# 1. Drive 마운트 (Python 셀)
-#    from google.colab import drive; drive.mount('/content/drive')
+```python
+# 0. 런타임 → 런타임 유형 변경 → GPU
+# 1. Drive 마운트
+from google.colab import drive; drive.mount('/content/drive')
 # 2. 데이터는 로컬 디스크에 풀어서 사용 (Drive에서 바로 읽으면 매우 느림)
-mkdir -p /content/nuscenes && tar -xzf /content/drive/MyDrive/nuscenes/v1.0-mini.tgz -C /content/nuscenes
-# 3. 레포 clone (브랜치 지정)
-git clone -b feature/embedding-file-mode https://github.com/leehyeoksu/DriveScene2Label.git && cd DriveScene2Label
-# 4. 의존성 (requirements.txt의 고정 버전)
-pip install -r embedding/requirements.txt
+!mkdir -p /content/nuscenes && tar -xzf /content/drive/MyDrive/nuscenes/v1.0-mini.tgz -C /content/nuscenes
+# 3. 레포 clone (브랜치 지정) 후 그 폴더로 이동
+!git clone -b feature/embedding-file-mode https://github.com/leehyeoksu/DriveScene2Label.git
+%cd /content/DriveScene2Label
+# 4. 의존성: requirements.txt의 고정 버전 (Colab에 미리 깔린 torch를 torch==2.14.1로 바꿈, 수 분 소요)
+!pip install -q -r embedding/requirements.txt
 # 5. 데이터 경로 (samples/, v1.0-mini/ 가 바로 아래에 있어야 함)
-export NUSCENES_ROOT=/content/nuscenes
+%env NUSCENES_ROOT=/content/nuscenes
 # 6. 이 환경의 벡터가 DB의 벡터와 같은지 확인. FAIL(exit 1)이면 여기서 중단
-python embedding/embed_images.py --check-reference embedding/fixtures/reference.npz
-# 7. 임베딩 → npz (Drive에 저장)
-python embedding/embed_images.py --source nuscenes --sink file --out /content/drive/MyDrive/nuscenes/embeddings/<날짜>-lr
+!python embedding/embed_images.py --check-reference embedding/fixtures/reference.npz
+# 7. 임베딩 → npz (Drive에 저장). 끝나면 "Folder holds 2424 of 2424 targets: complete"
+!python embedding/embed_images.py --source nuscenes --sink file --out /content/drive/MyDrive/nuscenes/embeddings/<날짜>-lr
+# 8. Drive에 다 써질 때까지 기다린 뒤 마운트 해제 (이걸 안 하면 마지막 part가 늦게 올라갈 수 있음)
+drive.flush_and_unmount()
 ```
 
-Colab 셀에서 `export`는 다음 셀로 이어지지 않으니, 5~7번은 한 셀에 쓰거나 `%env NUSCENES_ROOT=/content/nuscenes`를 쓰세요.
-
-8. DB가 있는 곳에서 결과 폴더를 내려받아 넣습니다(`.env`의 DB 정보 사용).
+9. DB가 있는 곳에서 결과 폴더를 내려받아 넣습니다(`.env`의 DB 정보 사용). Drive 웹에서 폴더가 다 올라간 뒤에 내려받으세요.
 
 ```bash
 set -a; source .env; set +a
@@ -197,7 +199,8 @@ export PGHOST=127.0.0.1 PGPORT=55433 PGUSER="$POSTGRES_USER" PGDATABASE="$POSTGR
 
 - `--check-reference`는 각 scene 첫 키프레임의 카메라 6장(60장, `embedding/fixtures/reference.npz`)을 다시 계산해 코사인 최솟값이 0.9999 이상인지 봅니다. 기준 파일은 DB의 벡터로 만들었습니다(`embedding/make_reference.py`).
 - importer는 manifest(형식 버전, 768차원, nuScenes)를 먼저 확인하고, dataset이 DB에 없으면 아무것도 쓰지 않고 끝납니다. part마다 모양·float32·NaN·단위 길이·중복을 확인해 문제 있는 part만 거부하고, `sample_data`에 없는 token은 세기만 하고 넣지 않습니다. 같은 폴더를 다시 넣어도 결과가 같습니다(upsert).
-- 거부된 part가 있거나 저장된 행이 0개면 exit 1입니다.
+- 실행이 끝나면 결과 폴더에 `complete.json`(대상 수, 저장된 수, 완료 여부)이 생깁니다. 실행 중에는 지워 두기 때문에, 실행 중이거나 Drive 동기화가 덜 된 폴더를 넣으면 importer가 알려줍니다.
+- exit 1이 되는 경우: 거부된 part가 있을 때, 저장된 행이 0개일 때, 완료되지 않은 결과일 때(`complete.json`이 없거나, `--limit` 같은 일부 실행이거나, 기록보다 part의 이미지가 적을 때). 마지막 경우에도 정상 part는 들어갑니다. 일부만 넣는 게 의도라면 `--allow-partial`을 붙이면 exit 0입니다.
 
 - 텍스트 → 벡터 변환은 모델이 필요하므로 Spring이 아니라 FastAPI(AI 서버)가 맡습니다. Spring은 저장된 벡터끼리의 유사도 조회(`/similar`)만 제공합니다.
 
