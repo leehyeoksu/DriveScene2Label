@@ -215,4 +215,5 @@ Docker 없이 WSL에서 FastAPI를 직접 띄울 때는 `VESPA_EXECUTOR=ssh VESP
 
 ## 5. 검증
 
-`python -m pytest tests -q`의 `test_vespa_ssh.py`가 가짜 ssh/sbatch/squeue/sacct/scancel로 성공(1/3/8class), 재실행 시 이전 파일 재사용 방지, purge된 job 판정, Slurm 컨트롤러 일시 오류 재시도, 제출 실패, 접속 실패, 실행 중 연결 끊김, timeout 시 scancel, 설정 누락을 검사합니다. 실제 클러스터에서는 컨테이너 SSH 접속, `sbatch` 제출, job ID 기반 `PENDING` 조회, `scancel` 후 502 반환까지 확인했습니다. GPU 실행 후 결과 반환과 Spring을 거친 전체 흐름은 별도 확인이 필요합니다.
+- Spring `POST /api/auto-label/jobs`(scene-0061, 8class) → ai-server → seraph Slurm job → 결과 복사·검증 → DB 저장 → `COMPLETED` 확인. 39 sample 전부, 박스 985개(pedestrian 552, car 196, truck 113, motorcycle 37, construction_vehicle 31, bus 26, bicycle 22, trailer 8), `GET /api/auto-label/jobs/{id}/results`로 조회. [Docker 통합 기록](../docs/docker-integration.md)의 local 실행 결과와 총 박스 수가 같고 car/truck 1개만 다름.
+- 이 실행은 seraph에 남은 이전 VESPA 중간 결과를 재사용해 약 65초 걸렸습니다. 캐시 없는 scene의 전체 처리 시간은 별도 확인이 필요합니다.
