@@ -40,6 +40,8 @@ out/
 .local/
 .env
 *:Zone.Identifier
+# SSH key/known_hosts for VESPA_EXECUTOR=ssh (compose.seraph.yml)
+/secrets/
 
 # Dataset roots and generated auto-labeling results (never commit nuScenes)
 /data/

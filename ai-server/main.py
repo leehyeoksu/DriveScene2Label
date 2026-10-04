@@ -50,4 +50,4 @@ async def vespa_error_handler(request, exc):
 def health(request: Request):
     service = request.app.state.clip_service
     ready = service.model is not None
-    return JSONResponse(status_code=200 if ready else 503, content={"status": "ok" if ready else "not_ready", "service": "drivescene-ai", "inference": {"clip": "ready" if ready else "not_ready", "vespa": "configured" if request.app.state.vespa_service.configured() else "not_configured"}, "device": service.device})
+    return JSONResponse(status_code=200 if ready else 503, content={"status": "ok" if ready else "not_ready", "service": "drivescene-ai", "inference": {"clip": "ready" if ready else "not_ready", "vespa": "configured" if request.app.state.vespa_service.configured() else "not_configured", "vespa_executor": request.app.state.vespa_service.executor}, "device": service.device})
