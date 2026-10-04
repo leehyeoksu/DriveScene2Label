@@ -6,6 +6,11 @@ nuScenes 기반 **3D Auto-Labeling + 자연어 Scene Retrieval** 백엔드입니
 - [DB / VESPA 결과 스키마](docs/auto-label-result-schema.md)
 - [통합 검증 및 테스트 범위](docs/integration-verification.md)
 - [Docker 검증 결과와 배포 제약](docs/docker-integration.md)
+- [프론트엔드 개발 기획서](docs/frontend-product-plan.md)
+- [프론트 구현 체크리스트](docs/frontend-implementation-checklist.md)
+- [Claude Code 구현 시작 프롬프트](docs/claude-code-frontend-prompt.md)
+
+프론트 개발 기준 문서와 수정 시안은 `docs/frontend-design/`에 준비되어 있습니다. 저장소 개발 지침은 [CLAUDE.md](CLAUDE.md)를 참고하세요. 현재 이 준비 작업에서 React 앱과 GT/Rerun 확장을 구현하거나 검증한 것은 아닙니다. 기존 백엔드 위에 `frontend/`를 추가하고 필요한 확장을 함께 진행합니다.
 
 ## 1. Architecture
 
