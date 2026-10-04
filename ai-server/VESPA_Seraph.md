@@ -1,0 +1,138 @@
+# VESPA를 원격 Slurm 클러스터에서 실행 (`VESPA_EXECUTOR=ssh`)
+
+로컬(컨테이너 안) 실행은 [VESPA.md](VESPA.md)를 참고하세요. 이 문서는 VESPA를 GPU 클러스터(예: Slurm 로그인 노드가 있는 학교 서버)에서 돌리는 설정입니다.
+
+기본값 `VESPA_EXECUTOR=local`은 컨테이너 안에서 VESPA를 실행합니다. `ssh`로 바꾸면 같은 `POST /auto-label`이 클러스터에 SSH로 Slurm job을 제출하고, 끝나면 결과 JSON을 가져와 local과 **같은 검증·응답 코드**로 반환합니다. Spring, DB, REST 계약은 바뀌지 않습니다.
+
+```text
+Spring backend → ai-server POST /auto-label → (ssh) 클러스터 sbatch → GPU 노드에서 VESPA
+                         ↑ 결과 JSON 복사 · 검증 ←────────────────────┘
+```
+
+흐름: `sbatch --parsable <script>`(EXP/SCENES 환경변수) 제출 → 받은 job ID로 `squeue -j` 대기(`VESPA_SSH_POLL_SECONDS` 간격) → 큐에서 빠지면 `sacct` 상태와 Slurm 로그 tail을 run 로그에 저장 → 출력 파일의 수정 시각이 제출 전과 달라졌는지 확인 → `cat`으로 복사 → coverage/클래스/score 검증.
+
+## 1. 원격(Slurm 클러스터) 준비
+
+ssh 모드는 클러스터에 있는 VESPA 레포에서 job을 실행합니다. **원본 [TUMFTM/VESPA](https://github.com/TUMFTM/VESPA)에는 scene별 결과를 쓰는 스크립트가 없으므로**, 이 레포의 [`vespa-remote/`](vespa-remote/)에 있는 두 파일을 VESPA 레포 최상위에 복사해서 씁니다.
+
+|파일|역할|
+|---|---|
+|`main_pseudo_vlm_scene.py`|원본 `main_pseudo_vlm.py`와 같은 파이프라인. 요청한 scene마다 최종 JSON을 따로 저장|
+|`pseudo_scenes_lowmem.sh`|위 스크립트를 실행하는 sbatch 스크립트. `EXP`, `SCENES` 환경변수를 받음|
+
+### 1-1. 원격 폴더 구성
+
+```text
+<VESPA_ROOT>/                          ← .env의 VESPA_SSH_REMOTE_ROOT
+├─ main_pseudo_vlm.py 등               (원본 VESPA)
+├─ main_pseudo_vlm_scene.py            ← vespa-remote/에서 복사
+├─ pseudo_scenes_lowmem.sh             ← vespa-remote/에서 복사
+├─ configs/vlm/p_final.yaml            ← 데이터셋 경로 지정 (1-2)
+├─ logs/                               (제출 시 자동 생성, Slurm 로그)
+└─ outs/vlm/p_final/#out_labels_scene/<scene>/vlm_p_final_<scene>_{1,3,8}class.json
+```
+
+```bash
+# 클러스터에서: 원본 VESPA clone 후 원본 설치 절차대로 환경 준비 (예: conda env "vespa")
+git clone https://github.com/TUMFTM/VESPA.git <VESPA_ROOT>
+# 로컬(이 레포)에서: 두 파일 복사. scp는 SSH로 파일을 보내며 포트 옵션은 대문자 -P
+scp -P <port> ai-server/vespa-remote/* <user>@<login-host>:<VESPA_ROOT>/
+```
+
+### 1-2. 데이터셋 위치와 설정
+
+nuScenes는 클러스터 안 어디에 둬도 되지만, **job이 실행되는 계산 노드에서도 보이는 경로**(공유 스토리지)여야 합니다. 폴더 구조는 로컬 `NUSCENES_HOST_PATH`와 같습니다.
+
+```text
+<DATA_ROOT>/                 예: /<공유 스토리지>/<계정>/datasets/nuscenes
+├─ samples/  sweeps/  maps/
+└─ v1.0-mini/                (scene.json, sample.json 등)
+```
+
+위치는 원격 VESPA의 config 파일에 지정합니다. ssh 모드는 이 config를 **그대로** 쓰고, local 모드처럼 경로를 덮어쓰지 않습니다.
+
+```yaml
+# <VESPA_ROOT>/configs/vlm/p_final.yaml
+data:
+  root_path: <DATA_ROOT>
+  dataset_version: v1.0-mini
+```
+
+- 원격 데이터는 로컬 `NUSCENES_HOST_PATH`와 **같은 버전**이어야 합니다. AI server가 로컬 metadata로 sample token을 검사합니다.
+- `.env`의 `VESPA_SSH_EXP`는 config 파일 이름입니다. mini는 `p_final`, trainval은 그 데이터용 config 이름(예: `p_final_trainval`)을 씁니다.
+
+### 1-3. 스크립트를 계정에 맞게 수정
+
+`pseudo_scenes_lowmem.sh` 맨 위의 `#SBATCH` 줄(파티션 `-p`, 노드 `-w`, GPU·메모리·시간)과 `CONDA_SH`, `CONDA_ENV` 기본값을 자기 계정과 클러스터에 맞게 고칩니다. `#SBATCH` 줄에는 환경변수를 쓸 수 없어서 직접 수정해야 합니다. 스크립트는 항상 `exit 0`이며, AI server는 종료 코드가 아니라 **새 출력 파일**로 성공을 판단합니다.
+
+### 1-4. 원격에서 먼저 단독 실행
+
+```bash
+cd <VESPA_ROOT>
+EXP=p_final SCENES=scene-0061 sbatch pseudo_scenes_lowmem.sh
+ls "outs/vlm/p_final/#out_labels_scene/scene-0061/"     # job이 끝난 뒤 3개 JSON 확인
+```
+
+## 2. AI server 연결 (Docker)
+
+1. 컨테이너 전용 키를 만들고 서버에 등록합니다. 개인 키(`~/.ssh/id_ed25519`)를 컨테이너에 넣지 않습니다. `secrets/`는 Git에서 제외됩니다.
+
+```bash
+mkdir -p secrets/vespa-ssh && chmod 700 secrets/vespa-ssh
+ssh-keygen -t ed25519 -N "" -C drivescene-ai-server -f secrets/vespa-ssh/id_ed25519
+ssh-copy-id -f -i secrets/vespa-ssh/id_ed25519.pub -p <port> <user>@<login-host>
+ssh-keyscan -p <port> <login-host> > secrets/vespa-ssh/known_hosts
+ssh -i secrets/vespa-ssh/id_ed25519 -o IdentitiesOnly=yes -p <port> <user>@<login-host> hostname   # 새 키만으로 접속 확인
+```
+
+`-f`가 없으면 기존 개인 키로 시험 접속이 성공해서 `ssh-copy-id`가 새 키 등록을 건너뛸 수 있습니다(`All keys were skipped`).
+
+2. `.env`에 추가합니다(실제 값은 커밋하지 않음).
+
+```bash
+COMPOSE_FILE=compose.yml:compose.seraph.yml
+VESPA_SSH_TARGET=<user>@<login-host>
+VESPA_SSH_PORT=<port>
+VESPA_SSH_REMOTE_ROOT=<VESPA_ROOT>
+VESPA_SSH_EXP=p_final
+```
+
+3. 재빌드 후 연결을 확인합니다. `openssh-client` 레이어만 새로 빌드됩니다.
+
+```bash
+docker compose up -d --build
+curl http://127.0.0.1:8000/health          # inference.vespa_executor = "ssh", vespa = "configured"
+docker compose exec ai-server sh -c 'ssh -i "$VESPA_SSH_KEY" -p "$VESPA_SSH_PORT" -o BatchMode=yes \
+  -o UserKnownHostsFile="$VESPA_SSH_KNOWN_HOSTS" "$VESPA_SSH_TARGET" "hostname; which sbatch squeue sacct"'
+```
+
+4. AI server 단독 실행: `curl --max-time 7300 -X POST http://127.0.0.1:8000/auto-label -H 'Content-Type: application/json' -d '{"scene_name":"scene-0061","class_mode":8}'`. 이 요청은 실제 Slurm job을 제출합니다. `docker compose logs -f ai-server`에 Slurm job ID와 상태가 출력됩니다. 이후 Spring의 `POST /api/auto-label/jobs`로 전체 흐름을 확인합니다.
+
+Docker 없이 WSL에서 FastAPI를 직접 띄울 때는 `VESPA_EXECUTOR=ssh VESPA_SSH_TARGET=<~/.ssh/config의 Host 별칭> VESPA_SSH_REMOTE_ROOT=...`만 주면 기존 `~/.ssh/config`(포트·키)를 그대로 사용합니다.
+
+## 3. 환경변수
+
+|변수|기본|의미|
+|---|---|---|
+|VESPA_EXECUTOR|local|`local` 또는 `ssh`|
+|VESPA_SSH_TARGET|(필수)|`user@host` 또는 ssh config 별칭|
+|VESPA_SSH_PORT|22 (overlay)|비우면 ssh 기본/config 사용|
+|VESPA_SSH_KEY / VESPA_SSH_KNOWN_HOSTS|overlay가 `/run/secrets/vespa-ssh/*`로 설정|비우면 ssh 기본값|
+|VESPA_SSH_REMOTE_ROOT|(필수)|원격 VESPA 레포 절대 경로|
+|VESPA_SSH_EXP|p_final|`configs/vlm/<EXP>.yaml`, 출력 경로의 exp 이름|
+|VESPA_SSH_SBATCH_SCRIPT|pseudo_scenes_lowmem.sh|원격 루트 기준 sbatch 스크립트|
+|VESPA_SSH_POLL_SECONDS|30|`squeue` 조회 간격|
+|VESPA_SSH_COMMAND_TIMEOUT|120|SSH 명령 1회 상한(초)|
+|VESPA_TIMEOUT_SECONDS|7200|큐 대기를 포함한 전체 상한. 넘으면 `scancel`|
+
+## 4. 오류와 한계
+
+- 503 `VESPA_LAUNCH_FAILED`: SSH 접속/`sbatch` 실패. 503 `VESPA_REMOTE_UNREACHABLE`: 실행 중 SSH 또는 Slurm 조회가 5회 연속 실패(원격 job은 계속될 수 있음). 502 `VESPA_EXECUTION_FAILED`: job이 끝났지만 새 출력이 없음(취소 포함) → run 로그의 Slurm 로그 tail 확인. 504 `VESPA_TIMEOUT`: 큐 대기를 포함해 `VESPA_TIMEOUT_SECONDS` 초과 시 `scancel` 후 반환.
+- 여전히 동기 HTTP입니다. GPU 노드가 바쁘면 큐 대기도 timeout에 포함되므로 `AUTO_LABEL_READ_TIMEOUT`을 `VESPA_TIMEOUT_SECONDS`보다 길게 유지하세요.
+- 출력 경로가 scene별로 고정이라, 이 서버 밖에서 같은 scene/EXP를 동시에 실행하면 결과를 구분할 수 없습니다. 이 서버 안에서는 lock으로 한 번에 하나만 실행합니다.
+- 결과 사본과 `execution.log`(명령, Slurm 상태, 로그 tail)는 `/results/<run_id>/`에 남습니다.
+- `kex_exchange_identification: Connection reset by peer`는 인증 전에 서버가 연결을 끊은 것입니다. 짧은 시간에 여러 번 접속하면 일시적으로 막힐 수 있으니 1~2분 뒤 다시 시도하세요. 실행 중 자주 나면 `VESPA_SSH_POLL_SECONDS`를 늘리세요.
+
+## 5. 검증
+
+`python -m pytest tests -q`의 `test_vespa_ssh.py`가 가짜 ssh/sbatch/squeue/sacct/scancel로 성공(1/3/8class), 재실행 시 이전 파일 재사용 방지, purge된 job 판정, Slurm 컨트롤러 일시 오류 재시도, 제출 실패, 접속 실패, 실행 중 연결 끊김, timeout 시 scancel, 설정 누락을 검사합니다. 실제 클러스터에서는 컨테이너 SSH 접속, `sbatch` 제출, job ID 기반 `PENDING` 조회, `scancel` 후 502 반환까지 확인했습니다. GPU 실행 후 결과 반환과 Spring을 거친 전체 흐름은 별도 확인이 필요합니다.

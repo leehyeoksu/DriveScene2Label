@@ -1,0 +1,23 @@
+# Overlay: run VESPA as a Slurm job on a remote cluster over SSH instead of inside ai-server.
+#   docker compose -f compose.yml -f compose.seraph.yml up -d --build
+# or set COMPOSE_FILE=compose.yml:compose.seraph.yml in .env. Setup: ai-server/VESPA_Seraph.md.
+# The cluster must hold the same nuScenes version as NUSCENES_HOST_PATH (sample tokens are checked).
+services:
+  ai-server:
+    environment:
+      VESPA_EXECUTOR: ssh
+      VESPA_SSH_TARGET: ${VESPA_SSH_TARGET:?Set VESPA_SSH_TARGET (user@host) in .env}
+      VESPA_SSH_PORT: ${VESPA_SSH_PORT:-22}
+      VESPA_SSH_KEY: /run/secrets/vespa-ssh/id_ed25519
+      VESPA_SSH_KNOWN_HOSTS: /run/secrets/vespa-ssh/known_hosts
+      VESPA_SSH_REMOTE_ROOT: ${VESPA_SSH_REMOTE_ROOT:?Set VESPA_SSH_REMOTE_ROOT in .env}
+      VESPA_SSH_EXP: ${VESPA_SSH_EXP:-p_final}
+      VESPA_SSH_SBATCH_SCRIPT: ${VESPA_SSH_SBATCH_SCRIPT:-pseudo_scenes_lowmem.sh}
+      VESPA_SSH_POLL_SECONDS: ${VESPA_SSH_POLL_SECONDS:-30}
+    volumes:
+      - type: bind
+        source: ${VESPA_SSH_DIR:-./secrets/vespa-ssh}
+        target: /run/secrets/vespa-ssh
+        read_only: true
+        bind:
+          create_host_path: false

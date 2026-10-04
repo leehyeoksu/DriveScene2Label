@@ -11,6 +11,8 @@ COPY ai-server/requirements-vespa.txt /tmp/vespa.txt
 # Share large PyTorch libraries, override only VESPA's older scientific dependencies.
 RUN python -m venv --system-site-packages /opt/vespa-env && /opt/vespa-env/bin/pip install -r /tmp/vespa.txt
 RUN cd /opt/vespa && /opt/vespa-env/bin/python -c "import main_pseudo_vlm; import main_pseudo_union"
+# SSH client for VESPA_EXECUTOR=ssh (remote Slurm). Separate layer keeps the heavy layers above cached.
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY embedding/clip_core.py /app/embedding/clip_core.py
 COPY ai-server/ /app/ai-server/
