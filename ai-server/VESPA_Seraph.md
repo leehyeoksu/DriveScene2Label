@@ -1,6 +1,6 @@
 # VESPA를 원격 Slurm 클러스터에서 실행 (`VESPA_EXECUTOR=ssh`)
 
-로컬(컨테이너 안) 실행은 [VESPA.md](VESPA.md)를 참고하세요. 이 문서는 VESPA를 GPU 클러스터(예: Slurm 로그인 노드가 있는 학교 서버)에서 돌리는 설정입니다.
+로컬(컨테이너 안) 실행은 [VESPA.md](VESPA.md)를 참고하세요. 이 문서는 VESPA를 Seraph(Slurm 기반 GPU서버)에서 돌리는 설정입니다.
 
 기본값 `VESPA_EXECUTOR=local`은 컨테이너 안에서 VESPA를 실행합니다. `ssh`로 바꾸면 같은 `POST /auto-label`이 클러스터에 SSH로 Slurm job을 제출하고, 끝나면 결과 JSON을 가져와 local과 **같은 검증·응답 코드**로 반환합니다. Spring, DB, REST 계약은 바뀌지 않습니다.
 
@@ -13,14 +13,14 @@ Spring backend → ai-server POST /auto-label → (ssh) 클러스터 sbatch → 
 
 ## 0. 내 PC에서 seraph 접속 설정 (처음 한 번)
 
-seraph 계정은 서버 관리자에게 발급받습니다. 아래 명령은 WSL/Ubuntu 터미널에서 실행합니다(Windows가 아니라 Ubuntu의 `~/.ssh/`에 저장됨). 공개 레포이므로 실제 값은 문서나 커밋에 넣지 않습니다.
+아래 명령은 WSL/Ubuntu 터미널에서 실행합니다(Windows가 아니라 Ubuntu의 `~/.ssh/`에 저장됨).
 
-|자리표시자|의미|어디서 얻나|
+|자리표시자|의미|
 |---|---|---|
-|`<seraph 계정>`|seraph 로그인 계정 이름|관리자에게 발급|
-|`<서버 주소>`|seraph 로그인 노드 주소|관리자 안내|
-|`<포트>`|SSH 포트. 기본값 22가 아닐 수 있음|관리자 안내|
-|`<키 메모>`|키를 구분하는 메모. 접속에는 쓰이지 않으며 아무 값이나 됨(예: PC 이름)|직접 정함|
+|`<seraph 계정>`|seraph 로그인 계정 이름|
+|`<서버 주소>`|seraph 로그인 노드 주소 (ex. ariel@khu.ac.kr)|
+|`<포트>`|SSH 포트. 기본값 22가 아닐 수 있음 (Ex. 30080)|
+|`<키 메모>`|키를 구분하는 메모. 접속에는 쓰이지 않으며 아무 값이나 됨(예: PC 이름)|
 
 **1) 개인 키 만들기**
 
@@ -186,11 +186,88 @@ docker compose exec ai-server sh -c 'ssh -i "$VESPA_SSH_KEY" -p "$VESPA_SSH_PORT
   -o UserKnownHostsFile="$VESPA_SSH_KNOWN_HOSTS" "$VESPA_SSH_TARGET" "hostname; which sbatch squeue sacct"'
 ```
 
-4. AI server 단독 실행: `curl --max-time 7300 -X POST http://127.0.0.1:8000/auto-label -H 'Content-Type: application/json' -d '{"scene_name":"scene-0061","class_mode":8}'`. 이 요청은 실제 Slurm job을 제출합니다. `docker compose logs -f ai-server`에 Slurm job ID와 상태가 출력됩니다. 이후 Spring의 `POST /api/auto-label/jobs`로 전체 흐름을 확인합니다.
+`/health`와 SSH 확인이 끝나면 3장으로 실제 job을 실행합니다.
 
 Docker 없이 WSL에서 FastAPI를 직접 띄울 때는 `VESPA_EXECUTOR=ssh VESPA_SSH_TARGET=<~/.ssh/config의 Host 별칭> VESPA_SSH_REMOTE_ROOT=...`만 주면 기존 `~/.ssh/config`(포트·키)를 그대로 사용합니다.
 
-## 3. 환경변수
+## 3. 실행하기
+
+평소에는 **Backend API**로 실행합니다. Backend가 job을 DB에 저장하고, worker가 ai-server를 호출하고, 결과를 DB에 저장합니다. 3-2의 ai-server 직접 호출은 연결 확인용이며 결과가 DB에 저장되지 않습니다.
+
+### 3-1. Backend로 실행
+
+**1) scene token 확인**
+
+Backend는 scene 이름(`scene-0061`)이 아니라 nuScenes의 scene **token**을 받습니다. dataset ID는 `GET /api/datasets`로 확인합니다.
+
+```bash
+curl -s http://127.0.0.1:8080/api/datasets/<datasetId>/scenes \
+  | python3 -c "import json,sys; [print(s['name'], s['token']) for s in json.load(sys.stdin)]"
+```
+
+**2) job 생성**
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/auto-label/jobs \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: <요청 키>' \
+  -d '{"sceneToken":"<scene token>","datasetId":<datasetId>,"classMode":8}'
+```
+
+- 응답은 `{"jobId":<번호>,"status":"PENDING"}`이며 바로 돌아옵니다. 실제 실행은 Backend worker가 이어서 처리합니다.
+- `classMode`는 1(vehicle), 3(vehicle·pedestrian·bicycle), 8(nuScenes 8개 클래스) 중 하나입니다.
+- `Idempotency-Key`는 요청을 구분하는 임의의 문자열입니다. 같은 키로 다시 보내면 새 job을 만들지 않고 기존 job을 돌려주므로, 네트워크 재시도에는 같은 키를, **새로 실행할 때는 새 키**를 씁니다.
+
+**3) 진행 확인**
+
+```bash
+curl http://127.0.0.1:8080/api/auto-label/jobs/<jobId>          # PENDING → RUNNING → COMPLETED 또는 FAILED
+docker compose logs -f ai-server                                # Slurm job ID와 상태 변화
+ssh seraph "squeue -j <Slurm job ID> -o '%T %N %M'"             # seraph에서 상태, 노드, 경과 시간
+```
+
+`FAILED`이면 `errorMessage`에는 짧은 분류만 담깁니다. 자세한 원인은 ai-server 로그와 `/results/<run_id>/execution.log`에서 확인합니다(5장).
+
+```bash
+docker compose exec ai-server sh -c 'cat /results/$(ls -t /results | head -1)/execution.log'
+```
+
+**4) 결과 조회**
+
+`COMPLETED`가 되면 결과를 조회합니다. 응답에는 처리한 sample 목록(`sampleTokens`), 박스(`boxes`: world 좌표 중심, 크기 WLH, quaternion WXYZ, 클래스), 결과 파일 정보(`artifacts`)가 들어 있습니다.
+
+```bash
+curl http://127.0.0.1:8080/api/auto-label/jobs/<jobId>/results
+# 요약만 보기: sample 수, 박스 수, 클래스별 개수
+curl -s http://127.0.0.1:8080/api/auto-label/jobs/<jobId>/results | python3 -c "import json,sys,collections;d=json.load(sys.stdin);print(d['mappingName'],'samples',len(d['sampleTokens']),'boxes',len(d['boxes']));print(collections.Counter(b['detectionName'] for b in d['boxes']))"
+```
+
+**예시**
+
+nuScenes mini의 scene-0061(token `cc8c0bf57f984915a77078b10eb33198`), dataset ID 1, 8class로 실행하는 예시입니다. dataset ID와 jobId는 DB마다 다를 수 있으므로 1)과 2)의 응답에서 확인한 값을 쓰세요.
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/auto-label/jobs \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: scene-0061-8class-run-1' \
+  -d '{"sceneToken":"cc8c0bf57f984915a77078b10eb33198","datasetId":1,"classMode":8}'
+# → {"jobId":1,"status":"PENDING"}
+curl http://127.0.0.1:8080/api/auto-label/jobs/1
+curl http://127.0.0.1:8080/api/auto-label/jobs/1/results
+```
+
+### 3-2. ai-server 직접 호출 (연결 확인용)
+
+Backend 없이 ai-server만 확인할 때 씁니다. 이 경로는 scene **이름**을 받고, 결과를 응답으로만 돌려주며 DB에 저장하지 않습니다. 실제 Slurm job을 제출하므로 GPU 노드가 비어 있을 때 실행하세요.
+
+```bash
+curl --max-time 7300 -X POST http://127.0.0.1:8000/auto-label \
+  -H 'Content-Type: application/json' \
+  -d '{"scene_name":"<scene 이름>","class_mode":8}'
+# 예: -d '{"scene_name":"scene-0061","class_mode":8}'
+```
+
+## 4. 환경변수
 
 |변수|기본|의미|
 |---|---|---|
@@ -205,7 +282,7 @@ Docker 없이 WSL에서 FastAPI를 직접 띄울 때는 `VESPA_EXECUTOR=ssh VESP
 |VESPA_SSH_COMMAND_TIMEOUT|120|SSH 명령 1회 상한(초)|
 |VESPA_TIMEOUT_SECONDS|7200|큐 대기를 포함한 전체 상한. 넘으면 `scancel`|
 
-## 4. 오류와 한계
+## 5. 오류와 한계
 
 - 503 `VESPA_LAUNCH_FAILED`: SSH 접속/`sbatch` 실패. 503 `VESPA_REMOTE_UNREACHABLE`: 실행 중 SSH 또는 Slurm 조회가 5회 연속 실패(원격 job은 계속될 수 있음). 502 `VESPA_EXECUTION_FAILED`: job이 끝났지만 새 출력이 없음(취소 포함) → run 로그의 Slurm 로그 tail 확인. 504 `VESPA_TIMEOUT`: 큐 대기를 포함해 `VESPA_TIMEOUT_SECONDS` 초과 시 `scancel` 후 반환.
 - 여전히 동기 HTTP입니다. GPU 노드가 바쁘면 큐 대기도 timeout에 포함되므로 `AUTO_LABEL_READ_TIMEOUT`을 `VESPA_TIMEOUT_SECONDS`보다 길게 유지하세요.
@@ -213,7 +290,7 @@ Docker 없이 WSL에서 FastAPI를 직접 띄울 때는 `VESPA_EXECUTOR=ssh VESP
 - 결과 사본과 `execution.log`(명령, Slurm 상태, 로그 tail)는 `/results/<run_id>/`에 남습니다.
 - `kex_exchange_identification: Connection reset by peer`는 인증 전에 서버가 연결을 끊은 것입니다. 짧은 시간에 여러 번 접속하면 일시적으로 막힐 수 있으니 1~2분 뒤 다시 시도하세요. 실행 중 자주 나면 `VESPA_SSH_POLL_SECONDS`를 늘리세요.
 
-## 5. 검증
+## 6. 검증
 
 - Spring `POST /api/auto-label/jobs`(scene-0061, 8class) → ai-server → seraph Slurm job → 결과 복사·검증 → DB 저장 → `COMPLETED` 확인. 39 sample 전부, 박스 985개(pedestrian 552, car 196, truck 113, motorcycle 37, construction_vehicle 31, bus 26, bicycle 22, trailer 8), `GET /api/auto-label/jobs/{id}/results`로 조회. [Docker 통합 기록](../docs/docker-integration.md)의 local 실행 결과와 총 박스 수가 같고 car/truck 1개만 다름.
 - 이 실행은 seraph에 남은 이전 VESPA 중간 결과를 재사용해 약 65초 걸렸습니다. 캐시 없는 scene의 전체 처리 시간은 별도 확인이 필요합니다.
