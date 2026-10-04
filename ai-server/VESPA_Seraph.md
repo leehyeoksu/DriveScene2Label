@@ -11,6 +11,86 @@ Spring backend → ai-server POST /auto-label → (ssh) 클러스터 sbatch → 
 
 흐름: `sbatch --parsable <script>`(EXP/SCENES 환경변수) 제출 → 받은 job ID로 `squeue -j` 대기(`VESPA_SSH_POLL_SECONDS` 간격) → 큐에서 빠지면 `sacct` 상태와 Slurm 로그 tail을 run 로그에 저장 → 출력 파일의 수정 시각이 제출 전과 달라졌는지 확인 → `cat`으로 복사 → coverage/클래스/score 검증.
 
+## 0. 내 PC에서 seraph 접속 설정 (처음 한 번)
+
+seraph 계정은 서버 관리자에게 발급받습니다. 아래 명령은 WSL/Ubuntu 터미널에서 실행합니다(Windows가 아니라 Ubuntu의 `~/.ssh/`에 저장됨). 공개 레포이므로 실제 값은 문서나 커밋에 넣지 않습니다.
+
+|자리표시자|의미|어디서 얻나|
+|---|---|---|
+|`<seraph 계정>`|seraph 로그인 계정 이름|관리자에게 발급|
+|`<서버 주소>`|seraph 로그인 노드 주소|관리자 안내|
+|`<포트>`|SSH 포트. 기본값 22가 아닐 수 있음|관리자 안내|
+|`<키 메모>`|키를 구분하는 메모. 접속에는 쓰이지 않으며 아무 값이나 됨(예: PC 이름)|직접 정함|
+
+**1) 개인 키 만들기**
+
+```bash
+ssh-keygen -t ed25519 -C "<키 메모>"
+```
+
+- 저장 위치를 물으면 Enter를 눌러 기본 위치(`~/.ssh/id_ed25519`)에 저장합니다. 이미 그 파일이 있으면 덮어쓰지 말고 이 단계를 건너뜁니다.
+- passphrase(키 비밀번호)를 비워 두면 비밀번호 없이 접속됩니다. 이때는 개인 키 파일이 곧 접속 권한이므로 복사하거나 레포에 넣지 마세요.
+- 결과로 두 파일이 생깁니다. `id_ed25519`는 개인 키로 내 PC에만 두고, `id_ed25519.pub`는 공개 키로 서버에 등록합니다.
+
+**2) 공개 키를 seraph에 등록하기**
+
+```bash
+ssh-copy-id -p <포트> <seraph 계정>@<서버 주소>
+```
+
+- 1)의 공개 키를 seraph의 `~/.ssh/authorized_keys`에 추가합니다. 이때 처음이자 마지막으로 seraph 비밀번호를 입력합니다.
+- `Number of key(s) added: 1`이 나오면 성공입니다. 이후에는 비밀번호 없이 키로 접속됩니다.
+
+**3) 접속 별칭 등록하기**
+
+`~/.ssh/config`에 아래 블록을 추가하면 긴 주소 대신 `ssh seraph`로 접속됩니다. 파일이 없으면 새로 만들고 `chmod 600 ~/.ssh/config`로 권한을 맞춥니다.
+
+```text
+Host seraph
+    HostName <서버 주소>
+    User <seraph 계정>
+    Port <포트>
+    IdentityFile ~/.ssh/id_ed25519
+    ServerAliveInterval 30
+```
+
+|줄|의미|
+|---|---|
+|`Host seraph`|별칭 이름. 자유롭게 정할 수 있으며 `ssh <별칭>`으로 씀|
+|`HostName` / `User` / `Port`|실제 서버 주소, 계정, 포트|
+|`IdentityFile`|1)에서 만든 개인 키 경로|
+|`ServerAliveInterval 30`|30초마다 신호를 보내 오래 켜 둔 연결이 끊기지 않게 함|
+
+**4) 확인하기**
+
+```bash
+ssh seraph "hostname; which sbatch squeue sacct"
+```
+
+비밀번호를 묻지 않고 로그인 노드 이름과 세 명령의 경로가 출력되면 완료입니다. 서버 SSH 버전에 따라 `post-quantum key exchange` 경고가 함께 나올 수 있으며 동작에는 영향이 없습니다.
+
+이 별칭은 내 PC에서 직접 접속할 때만 쓰입니다. AI server 컨테이너는 2장의 전용 키와 `.env` 값으로 따로 접속합니다.
+
+**예시**
+
+계정 `student01`, 서버 주소 `seraph.example.ac.kr`, 포트 `2222`, 키 메모 `my-laptop`이라고 가정한 예시입니다. 실제 값이 아니므로 자기 값으로 바꿔 입력하세요.
+
+```bash
+ssh-keygen -t ed25519 -C "my-laptop"
+ssh-copy-id -p 2222 student01@seraph.example.ac.kr
+ssh seraph "hostname; which sbatch squeue sacct"   # ~/.ssh/config 등록 후
+```
+
+```text
+# ~/.ssh/config
+Host seraph
+    HostName seraph.example.ac.kr
+    User student01
+    Port 2222
+    IdentityFile ~/.ssh/id_ed25519
+    ServerAliveInterval 30
+```
+
 ## 1. 원격(Slurm 클러스터) 준비
 
 ssh 모드는 클러스터에 있는 VESPA 레포에서 job을 실행합니다. **원본 [TUMFTM/VESPA](https://github.com/TUMFTM/VESPA)에는 scene별 결과를 쓰는 스크립트가 없으므로**, 이 레포의 [`vespa-remote/`](vespa-remote/)에 있는 두 파일을 VESPA 레포 최상위에 복사해서 씁니다.
@@ -35,8 +115,8 @@ ssh 모드는 클러스터에 있는 VESPA 레포에서 job을 실행합니다. 
 ```bash
 # 클러스터에서: 원본 VESPA clone 후 원본 설치 절차대로 환경 준비 (예: conda env "vespa")
 git clone https://github.com/TUMFTM/VESPA.git <VESPA_ROOT>
-# 로컬(이 레포)에서: 두 파일 복사. scp는 SSH로 파일을 보내며 포트 옵션은 대문자 -P
-scp -P <port> ai-server/vespa-remote/* <user>@<login-host>:<VESPA_ROOT>/
+# 로컬(이 레포)에서: 두 파일 복사. scp는 SSH로 파일을 보냅니다(0장의 seraph 별칭 사용)
+scp ai-server/vespa-remote/* seraph:<VESPA_ROOT>/
 ```
 
 ### 1-2. 데이터셋 위치와 설정
@@ -75,25 +155,25 @@ ls "outs/vlm/p_final/#out_labels_scene/scene-0061/"     # job이 끝난 뒤 3개
 
 ## 2. AI server 연결 (Docker)
 
-1. 컨테이너 전용 키를 만들고 서버에 등록합니다. 개인 키(`~/.ssh/id_ed25519`)를 컨테이너에 넣지 않습니다. `secrets/`는 Git에서 제외됩니다.
+1. 컨테이너 전용 키를 만들고 seraph에 등록합니다. 0장의 개인 키(`~/.ssh/id_ed25519`)를 컨테이너에 넣지 않기 위해서입니다. `secrets/`는 Git에서 제외됩니다. `-C drivescene-ai-server`는 0장과 같은 키 메모입니다.
 
 ```bash
 mkdir -p secrets/vespa-ssh && chmod 700 secrets/vespa-ssh
 ssh-keygen -t ed25519 -N "" -C drivescene-ai-server -f secrets/vespa-ssh/id_ed25519
-ssh-copy-id -f -i secrets/vespa-ssh/id_ed25519.pub -p <port> <user>@<login-host>
-ssh-keyscan -p <port> <login-host> > secrets/vespa-ssh/known_hosts
-ssh -i secrets/vespa-ssh/id_ed25519 -o IdentitiesOnly=yes -p <port> <user>@<login-host> hostname   # 새 키만으로 접속 확인
+ssh-copy-id -f -i secrets/vespa-ssh/id_ed25519.pub seraph
+ssh-keyscan -p <포트> <서버 주소> > secrets/vespa-ssh/known_hosts   # 서버 신원 저장 (예: -p 2222 seraph.example.ac.kr)
+ssh -i secrets/vespa-ssh/id_ed25519 -o IdentitiesOnly=yes seraph hostname   # 새 키만으로 접속 확인
 ```
 
 `-f`가 없으면 기존 개인 키로 시험 접속이 성공해서 `ssh-copy-id`가 새 키 등록을 건너뛸 수 있습니다(`All keys were skipped`).
 
-2. `.env`에 추가합니다(실제 값은 커밋하지 않음).
+2. `.env`에 추가합니다. 컨테이너에는 `~/.ssh/config`가 없으므로 별칭이 아니라 실제 계정, 주소, 포트를 씁니다. `.env`는 커밋하지 않습니다.
 
 ```bash
 COMPOSE_FILE=compose.yml:compose.seraph.yml
-VESPA_SSH_TARGET=<user>@<login-host>
-VESPA_SSH_PORT=<port>
-VESPA_SSH_REMOTE_ROOT=<VESPA_ROOT>
+VESPA_SSH_TARGET=<seraph 계정>@<서버 주소>   # 예: student01@seraph.example.ac.kr
+VESPA_SSH_PORT=<포트>                        # 예: 2222
+VESPA_SSH_REMOTE_ROOT=<VESPA_ROOT>            # 1장의 원격 VESPA 폴더 절대 경로
 VESPA_SSH_EXP=p_final
 ```
 
