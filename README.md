@@ -110,6 +110,7 @@ cp .env.example .env
 |APP_PORT / AI_PORT|8080 / 8000, host loopback에만 공개|
 |VESPA_NUM_THREADS|1, VESPA subprocess의 BLAS/OMP 스레드 수. CLIP 설정과 독립|
 |VESPA_TIMEOUT_SECONDS|7200초 subprocess 상한|
+|VESPA_EXECUTOR|local. `ssh`면 원격 Slurm 클러스터에서 실행 (`compose.seraph.yml`, [VESPA_Seraph.md](ai-server/VESPA_Seraph.md))|
 |AI_SERVER_READ_TIMEOUT|30s, CPU CLIP 처리에 더 필요한 경우 조정|
 |AUTO_LABEL_READ_TIMEOUT|7300s, VESPA timeout보다 길게|
 |AUTO_LABEL_WORKER_ENABLED|true, Spring DB polling worker|

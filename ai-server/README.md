@@ -1,6 +1,6 @@
 # DriveScene2Label AI 서버 — CLIP
 
-Spring은 DB 저장/검색과 job을 관리합니다. AI 서버는 CLIP 벡터와 VESPA 예측 JSON을 생성하며 DB에는 접근하지 않습니다. VESPA는 subprocess wrapper로 연결되며 별도 VESPA 환경/데이터 설정이 필요합니다. [VESPA 실행 안내](VESPA.md)를 참고하세요.
+Spring은 DB 저장/검색과 job을 관리합니다. AI 서버는 CLIP 벡터와 VESPA 예측 JSON을 생성하며 DB에는 접근하지 않습니다. VESPA는 subprocess wrapper로 연결되며 별도 VESPA 환경/데이터 설정이 필요합니다. [VESPA 실행 안내](VESPA.md)를 참고하세요. 원격 Slurm 클러스터 실행은 [VESPA_Seraph.md](VESPA_Seraph.md)를 참고하세요.
 
 Rerun `.rrd` recording은 `POST /recordings`가 별도 subprocess exporter(rerun-sdk 0.38.1)로 생성합니다. [Recording exporter](RECORDING.md)를 참고하세요.
 

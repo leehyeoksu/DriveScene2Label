@@ -12,6 +12,8 @@ COPY ai-server/requirements-vespa.txt /tmp/vespa.txt
 # Share large PyTorch libraries, override only VESPA's older scientific dependencies.
 RUN python -m venv --system-site-packages /opt/vespa-env && /opt/vespa-env/bin/pip install -r /tmp/vespa.txt
 RUN cd /opt/vespa && /opt/vespa-env/bin/python -c "import main_pseudo_vlm; import main_pseudo_union"
+# SSH client for VESPA_EXECUTOR=ssh (remote Slurm). Separate layer keeps the heavy layers above cached.
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client && rm -rf /var/lib/apt/lists/*
 # Exporter uses rerun-sdk 0.38.1 (base); the VESPA venv must still resolve its own 0.21.0 first.
 RUN python -c "import rerun; assert rerun.__version__ == '0.38.1', rerun.__version__" \
     && /opt/vespa-env/bin/python -c "import rerun; assert rerun.__version__ == '0.21.0', rerun.__version__"
