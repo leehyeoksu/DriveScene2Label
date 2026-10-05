@@ -8,6 +8,9 @@ import { compareUrl, parseId, searchUrl } from '@/app/urls';
 import { Logo } from '@/components/Logo';
 import { StateBox } from '@/components/StateBox';
 import { SceneCard } from '@/features/scenes/SceneCard';
+import { capabilityMessage, stateLabel } from '@/api/system';
+import { DataOriginBadge } from '@/features/system/DataOriginBadge';
+import { useSystemStatus } from '@/features/system/useSystemStatus';
 
 const EXAMPLES = ['rainy night road', 'pedestrians crossing at intersection', 'construction zone with trucks', 'parking lot'];
 
@@ -36,9 +39,14 @@ export function SceneSearchPage() {
 
   const datasetId = dataset?.id ?? null;
   const scenes = useQuery({ ...scenesQuery(datasetId ?? -1), enabled: datasetId != null });
+  const system = useSystemStatus(datasetId);
+  const searchCap = system.capability('search');
+  // Search is a read: it is tried unless the server says it is unavailable (e.g. no embeddings for this dataset).
+  const searchBlocked = searchCap.state === 'UNAVAILABLE';
   const search = useQuery({
     ...searchQuery({ q, datasetId, k: 10, aggregation: 'TOP_K_AVERAGE', imageTopK: 3, keyframesOnly: true }),
-    enabled: !!q && datasetId != null,
+    // Wait for the readiness answer so a known-unavailable search is never sent (status errors still allow trying).
+    enabled: !!q && datasetId != null && !system.isPending && !searchBlocked,
   });
 
   const setDataset = (id: number) => {
@@ -80,6 +88,7 @@ export function SceneSearchPage() {
             </select>
           )}
         </div>
+        <DataOriginBadge datasetId={datasetId} />
       </header>
       <main className="search-main">
         <section className="search-head" aria-labelledby="search-title">
@@ -89,8 +98,15 @@ export function SceneSearchPage() {
             <Search className="icon" aria-hidden="true" />
             <label className="sr-only" htmlFor="q">씬 검색어</label>
             <input id="q" type="search" autoComplete="off" spellCheck={false} placeholder="예: rainy night road" value={input} onChange={(e) => setInput(e.currentTarget.value)} maxLength={500} />
-            <button className="btn btn--primary" type="submit" disabled={!input.trim() || datasetId == null}>검색</button>
+            <button className="btn btn--primary" type="submit" disabled={!input.trim() || datasetId == null || searchBlocked}>검색</button>
           </form>
+          {datasetId != null && searchCap.state !== 'READY' && searchCap.reasonCode !== 'STATUS_CHECKING' && (
+            <div className="search-note" role="status" data-testid="search-readiness" data-reason={searchCap.reasonCode ?? ''}>
+              <span className={`status status--${searchCap.state === 'UNAVAILABLE' ? 'FAILED' : 'UNKNOWN'}`}><i />검색 {stateLabel(searchCap.state)}</span>
+              <span>{capabilityMessage(searchCap)}{searchBlocked ? ' 씬 목록 탐색은 그대로 쓸 수 있어요.' : ''}</span>
+              <button type="button" className="btn btn--sm btn--ghost" onClick={() => void system.refresh()} disabled={system.refreshing}>다시 확인</button>
+            </div>
+          )}
           <div className="examples">
             <span className="examples-label">예시</span>
             {EXAMPLES.map((ex) => <button key={ex} type="button" className="chip" onClick={() => { setInput(ex); submit(ex); }}>{ex}</button>)}
@@ -107,6 +123,10 @@ export function SceneSearchPage() {
           ) : datasetParam != null && datasets.data && !dataset ? (
             <StateBox kind="error" title="링크의 데이터셋을 찾을 수 없어요" actions={<button type="button" className="btn btn--weak" onClick={() => navigate(searchUrl(null))}>데이터셋 다시 고르기</button>}>
               dataset {datasetParam}은(는) 이 서버에 없어요.
+            </StateBox>
+          ) : q && searchBlocked ? (
+            <StateBox title="이 데이터셋에서는 지금 검색할 수 없어요" actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => submit('')}>전체 씬 보기</button>}>
+              {capabilityMessage(searchCap)}
             </StateBox>
           ) : q ? (
             <SearchResults q={q} search={search} datasetId={datasetId} isPicked={isPicked} toggle={toggleCompare} clear={() => submit('')} retry={() => void search.refetch()} />

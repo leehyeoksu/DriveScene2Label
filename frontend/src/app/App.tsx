@@ -2,6 +2,8 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { lazy, Suspense, useState } from 'react';
 import { createBrowserRouter, Navigate, RouterProvider } from 'react-router';
 import { Toasts } from '@/components/Toasts';
+import { InstanceWatcher } from '@/features/system/InstanceWatcher';
+import { bindQueryClient } from '@/lib/jobs/submissions';
 import { createQueryClient } from './queryClient';
 import { SceneSearchPage } from '@/pages/SceneSearchPage';
 
@@ -20,9 +22,14 @@ const router = createBrowserRouter([
 ]);
 
 export function App() {
-  const [client] = useState(createQueryClient);
+  const [client] = useState(() => {
+    const qc = createQueryClient();
+    bindQueryClient(qc);
+    return qc;
+  });
   return (
     <QueryClientProvider client={client}>
+      <InstanceWatcher />
       <RouterProvider router={router} />
       <Toasts />
     </QueryClientProvider>

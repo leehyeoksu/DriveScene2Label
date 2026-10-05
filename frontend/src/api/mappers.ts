@@ -116,7 +116,7 @@ export function toJobStatus(j: JobStatusDto): JobStatus {
   return {
     jobId: j.jobId, datasetId: j.datasetId, status: j.status, errorMessage: j.errorMessage,
     createdAt: time(j.createdAt) ?? Date.now(), startedAt: time(j.startedAt), completedAt: time(j.completedAt),
-    sceneToken: j.sceneToken ?? null, classMode: isClassMode(mode) ? mode : null,
+    sceneToken: j.sceneToken ?? null, classMode: isClassMode(mode) ? mode : null, errorCode: j.errorCode ?? null,
   };
 }
 
@@ -139,7 +139,7 @@ export function toRecording(r: RecordingDto): Recording {
     recordingId: r.recordingId, datasetId: r.datasetId, sceneId: r.sceneId, sceneToken: r.sceneToken, jobId: r.jobId,
     status: r.status, sdkVersion: r.sdkVersion, rerunRecordingId: r.rerunRecordingId ?? '', timeline: r.timeline ?? 'sample',
     entities: r.entities ?? { lidar: 'world/lidar', ego: 'world/ego', gt: 'world/gt', prediction: null }, samples: [...(r.samples ?? [])].sort((a, b) => a.index - b.index),
-    contentUrl: r.status === 'READY' ? r.contentUrl : null, sizeBytes: r.sizeBytes, errorMessage: r.errorMessage,
+    contentUrl: r.status === 'READY' ? r.contentUrl : null, sizeBytes: r.sizeBytes, errorMessage: r.errorMessage, errorCode: r.errorCode ?? null,
     createdAt: time(r.createdAt) ?? 0,
   };
 }

@@ -183,6 +183,8 @@ export interface JobStatusDto {
   sceneName?: string | null;
   classMode?: number | null;
   mappingName?: string | null;
+  /** Stable failure identifier (V6+). null for running/completed jobs and rows written before it existed. */
+  errorCode?: string | null;
 }
 
 export interface PredictionDto {
@@ -267,6 +269,7 @@ export interface RecordingDto {
   contentUrl: string | null;
   sizeBytes: number | null;
   errorMessage: string | null;
+  errorCode?: string | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -279,4 +282,26 @@ export interface ApiErrorBody {
   error?: string;
   status?: number;
   path?: string;
+}
+
+export type CapabilityState = 'READY' | 'CONFIGURED' | 'UNAVAILABLE' | 'UNKNOWN';
+export type DataOrigin = 'SYNTHETIC' | 'NUSCENES' | 'UNKNOWN';
+
+export interface CapabilityDto {
+  state: CapabilityState;
+  canExecute: boolean;
+  reasonCode: string | null;
+  message: string | null;
+  checkedAt: string | null;
+  expiresAt: string | null;
+  executor?: string | null;
+}
+
+/** GET /api/system/status (schemaVersion 1). */
+export interface SystemStatusDto {
+  schemaVersion: number;
+  instanceId: string;
+  checkedAt: string;
+  dataset: { id: number; version: string; origin: DataOrigin; metadataChecksum: string; mediaValidation: string } | null;
+  capabilities: Record<'catalog' | 'media' | 'search' | 'vespa' | 'recording', CapabilityDto>;
 }

@@ -560,3 +560,19 @@
   .indet::after { left: 0; width: 100%; opacity: .5; }
   .spin { border-right-color: currentColor; opacity: .6; }
 }
+
+/* ---------- data origin & readiness (integration plan §6) ---------- */
+@layer components {
+  .origin-badge { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; font-size: var(--fs-xs); font-weight: 700; white-space: nowrap; flex: none; }
+  .origin-badge .icon { width: 14px; height: 14px; }
+  .origin-badge--synthetic { background: rgba(255, 204, 77, .16); color: #ffd877; }
+  .origin-badge--unknown { background: rgba(160, 169, 180, .16); color: #d0d6dd; }
+  .origin-badge--nuscenes { background: rgba(58, 209, 122, .14); color: #74e3a3; }
+  .readiness { margin-top: 12px; padding: 12px 14px; border-radius: var(--r-md); background: rgba(255, 255, 255, .05); font-size: var(--fs-sm); color: var(--tx-2); line-height: 1.55; }
+  .readiness b { color: var(--tx-1); }
+  .readiness .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .readiness .btn { margin-top: 8px; }
+  .readiness--blocked { background: rgba(255, 204, 77, .08); }
+  .search-note { margin-top: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--tx-2); font-size: var(--fs-sm); }
+  .scope-note { color: var(--tx-3); font-size: var(--fs-2xs); font-weight: 500; }
+}

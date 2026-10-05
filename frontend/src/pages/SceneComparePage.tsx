@@ -15,6 +15,7 @@ import { FrameTimeline } from '@/features/timeline/FrameTimeline';
 import { RecordingPanel } from '@/features/viewer/RecordingPanel';
 import { usePlaybackLifecycle, useWorkspaceShortcuts } from '@/features/workspace/hooks';
 import { useCameraBody } from '@/features/workspace/PaneView';
+import { DataOriginBadge } from '@/features/system/DataOriginBadge';
 import { mapRelative } from '@/lib/time/timeline';
 import { cn } from '@/lib/utils';
 import { useLayout } from '@/stores/layout';
@@ -217,6 +218,7 @@ function ComparePane({ side, scene, scenes, frames, pred, active }: PaneProps) {
       onPointerDownCapture={() => { if (!active) setActivePane(side); }}>
       <div className="pane-head">
         <button type="button" className="pane-badge" aria-pressed={active} onClick={() => setActivePane(side)} aria-label={`씬 ${side}를 작업 대상으로 선택`} title="작업 대상으로 선택">{side}</button>
+        <DataOriginBadge datasetId={pane.datasetId} />
         <label className="sr-only" htmlFor={`pane-sel-${side}`}>씬 {side} 선택</label>
         <select id={`pane-sel-${side}`} className="select select--sm" value={pane.sceneId ?? ''}
           onChange={(e) => { setPlaying(side, false); openScene(side, { datasetId: pane.datasetId!, sceneId: Number(e.currentTarget.value), sampleToken: null, jobId: null }); }}>

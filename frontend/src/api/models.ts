@@ -117,6 +117,7 @@ export interface JobStatus {
   /** Present only when the server provides job context (BE-05). */
   sceneToken: string | null;
   classMode: ClassMode | null;
+  errorCode: string | null;
 }
 
 export interface JobResults {
@@ -154,5 +155,6 @@ export interface Recording {
   contentUrl: string | null;
   sizeBytes: number | null;
   errorMessage: string | null;
+  errorCode: string | null;
   createdAt: number;
 }

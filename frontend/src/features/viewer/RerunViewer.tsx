@@ -10,9 +10,17 @@ interface Props {
   recording: Recording;
   /** Displayed sample of the pane (React is the timeline's source of truth). */
   displayedSampleToken: string | null;
+  /** The server confirmed the READY file is gone (RECORDING_FILE_MISSING): the panel re-reads the recording state. */
+  onFileMissing?: () => void;
 }
 
-type Phase = 'loading' | 'ready' | 'error';
+type Phase = 'loading' | 'ready' | 'download-error' | 'viewer-error';
+/** After this long without recording_open the user is offered to re-open (the viewer may be stuck). */
+const STALL_MS = 45_000;
+
+class DownloadError extends Error {
+  constructor(message: string, readonly status: number | null, readonly code: string | null) { super(message); }
+}
 
 /**
  * Rerun Web Viewer 0.38.1 bound to one pane.
@@ -22,7 +30,7 @@ type Phase = 'loading' | 'ready' | 'error';
  * - Box selection maps (entity path, instance id, current sample) → REST box id via the recording metadata.
  * The viewer, its WASM memory and listeners are released on unmount or recording change.
  */
-export function RerunViewer({ paneId, recording, displayedSampleToken }: Props) {
+export function RerunViewer({ paneId, recording, displayedSampleToken, onFileMissing }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<WebViewerType | null>(null);
   const rrIdRef = useRef<string | null>(null);
@@ -31,6 +39,12 @@ export function RerunViewer({ paneId, recording, displayedSampleToken }: Props) 
   const activeTimelineRef = useRef<string>(recording.timeline);
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState<string | null>(null);
+  // Re-opening the same READY recording: a new attempt tears down the previous viewer/channel/listeners/fetch and
+  // mounts a fresh host element. It never creates a recording or a job.
+  const [attempt, setAttempt] = useState(0);
+  const [stalled, setStalled] = useState(false);
+  const fileMissingRef = useRef(onFileMissing);
+  fileMissingRef.current = onFileMissing;
   const requestSample = useWorkspace((s) => s.requestSample);
   const selectBox = useWorkspace((s) => s.selectBox);
   const contentUrl = recording.contentUrl;
@@ -45,6 +59,8 @@ export function RerunViewer({ paneId, recording, displayedSampleToken }: Props) 
     const offs: Array<() => void> = [];
     setPhase('loading');
     setError(null);
+    setStalled(false);
+    const stallTimer = window.setTimeout(() => setStalled(true), STALL_MS);
     const controller = new AbortController();
     let channel: { close: () => void } | null = null;
     (async () => {
@@ -54,8 +70,15 @@ export function RerunViewer({ paneId, recording, displayedSampleToken }: Props) 
         const [{ WebViewer }, bytes] = await Promise.all([
           import('@rerun-io/web-viewer'),
           fetch(contentUrl, { signal: controller.signal }).then(async (res) => {
-            if (!res.ok) throw new Error(`recording 파일을 받지 못했어요 (HTTP ${res.status})`);
+            if (!res.ok) {
+              let code: string | null = null;
+              try { code = ((await res.json()) as { code?: string }).code ?? null; } catch { /* non-JSON error body */ }
+              throw new DownloadError(`recording 파일을 받지 못했어요 (HTTP ${res.status}${code ? ` ${code}` : ''})`, res.status, code);
+            }
             return new Uint8Array(await res.arrayBuffer());
+          }, (e: unknown) => {
+            if (controller.signal.aborted) throw e;
+            throw new DownloadError('recording 파일을 받는 중 연결이 끊겼어요', null, null);
           }),
         ]);
         if (disposed) return;
@@ -80,6 +103,8 @@ export function RerunViewer({ paneId, recording, displayedSampleToken }: Props) 
             lastSentRef.current = idx;
             viewer.set_current_time(e.recording_id, recRef.current.timeline, idx);
           }
+          window.clearTimeout(stallTimer);
+          setStalled(false);
           setPhase('ready');
         }));
         offs.push(viewer.on('timeline_change', (e) => { activeTimelineRef.current = e.timeline; }));
@@ -107,13 +132,18 @@ export function RerunViewer({ paneId, recording, displayedSampleToken }: Props) 
         ch.send_rrd(bytes);
       } catch (e) {
         if (!disposed && !controller.signal.aborted) {
-          setPhase('error');
+          window.clearTimeout(stallTimer);
+          if (e instanceof DownloadError) {
+            setPhase('download-error');
+            if (e.code === 'RECORDING_FILE_MISSING') fileMissingRef.current?.();
+          } else setPhase('viewer-error');
           setError(e instanceof Error ? e.message : String(e));
         }
       }
     })();
     return () => {
       disposed = true;
+      window.clearTimeout(stallTimer);
       controller.abort();
       offs.forEach((off) => off());
       try { channel?.close(); } catch { /* viewer already stopped */ }
@@ -122,7 +152,7 @@ export function RerunViewer({ paneId, recording, displayedSampleToken }: Props) 
       rrIdRef.current = null;
       lastSentRef.current = null;
     };
-  }, [contentUrl, paneId, requestSample, selectBox]);
+  }, [contentUrl, paneId, requestSample, selectBox, attempt]);
 
   // React timeline → viewer.
   useEffect(() => {
@@ -135,12 +165,33 @@ export function RerunViewer({ paneId, recording, displayedSampleToken }: Props) 
     viewer.set_current_time(rr, recording.timeline, idx);
   }, [displayedSampleToken, recording, phase]);
 
+  const reopen = <button type="button" className="btn btn--sm btn--weak" onClick={() => setAttempt((a) => a + 1)} data-testid="reopen-recording">같은 recording 다시 열기</button>;
   return (
     <>
-      {/* Rerun sets `position: relative` on the element it is given, so it gets a full-size child of an absolute frame. */}
-      <div className="lidar-frame"><div ref={hostRef} className="lidar-host" data-testid="rerun-host" data-phase={phase} /></div>
-      {phase === 'loading' && <div className="lidar-state" role="status"><span className="spin" aria-hidden="true" /><b>3D 뷰어를 불러오고 있어요</b><span>recording {(recording.sizeBytes ?? 0) > 0 ? `${((recording.sizeBytes ?? 0) / 1e6).toFixed(1)} MB` : ''}</span></div>}
-      {phase === 'error' && <div className="lidar-state" role="alert"><b>3D 뷰어를 열지 못했어요</b><span className="mono">{error}</span><span>카메라와 작업 조회는 그대로 쓸 수 있어요.</span></div>}
+      {/* Rerun sets `position: relative` on the element it is given, so it gets a full-size child of an absolute frame.
+          The key gives each attempt a fresh element. */}
+      <div className="lidar-frame"><div key={attempt} ref={hostRef} className="lidar-host" data-testid="rerun-host" data-phase={phase} data-attempt={attempt} /></div>
+      {phase === 'loading' && (
+        <div className="lidar-state" role="status">
+          <span className="spin" aria-hidden="true" /><b>3D 뷰어를 불러오고 있어요</b>
+          <span>recording {(recording.sizeBytes ?? 0) > 0 ? `${((recording.sizeBytes ?? 0) / 1e6).toFixed(1)} MB` : ''}</span>
+          {stalled && <><span>예상보다 오래 걸려요.</span>{reopen}</>}
+        </div>
+      )}
+      {phase === 'download-error' && (
+        <div className="lidar-state" role="alert" data-testid="viewer-download-error">
+          <b>3D 파일을 받지 못했어요</b><span className="mono">{error}</span>
+          <span>recording은 만들어져 있어요. 파일만 다시 받아요(새로 만들거나 라벨 작업을 다시 실행하지 않아요).</span>
+          {reopen}
+        </div>
+      )}
+      {phase === 'viewer-error' && (
+        <div className="lidar-state" role="alert" data-testid="viewer-start-error">
+          <b>3D 뷰어를 시작하지 못했어요</b><span className="mono">{error}</span>
+          <span>브라우저의 WebGL/WebGPU 또는 뷰어 로딩 문제일 수 있어요. 카메라와 작업 조회는 그대로 쓸 수 있어요.</span>
+          {reopen}
+        </div>
+      )}
     </>
   );
 }

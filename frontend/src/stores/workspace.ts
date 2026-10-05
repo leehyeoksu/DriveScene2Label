@@ -33,6 +33,11 @@ export interface PaneState {
   recordingId: number | null;
   /** Compare panes only: camera grid or 3D. */
   paneView: 'cams' | 'lidar';
+  /**
+   * UI context generation. Bumped whenever the pane shows another scene (A→B→A ends on a new number), so a late
+   * answer to a request made in an older context is recorded but never attached to the current view.
+   */
+  generation: number;
 }
 
 export const initialPane = (): PaneState => ({
@@ -52,7 +57,11 @@ export const initialPane = (): PaneState => ({
   resultJobId: null,
   recordingId: null,
   paneView: 'cams',
+  generation: 0,
 });
+
+let generationSeq = 0;
+const nextGeneration = () => ++generationSeq;
 
 interface OpenScene {
   datasetId: number;
@@ -67,6 +76,7 @@ interface WorkspaceStore {
   sync: boolean;
   openScene: (pane: PaneId, s: OpenScene) => void;
   closePane: (pane: PaneId) => void;
+  resetServerContext: () => void;
   requestSample: (pane: PaneId, token: string, origin: ChangeOrigin) => void;
   markDisplayed: (pane: PaneId, token: string) => void;
   setPlaying: (pane: PaneId, playing: boolean) => void;
@@ -98,7 +108,7 @@ export const useWorkspace = create<WorkspaceStore>()((set) => ({
       const cur = s.panes[pane];
       const same = cur.datasetId === o.datasetId && cur.sceneId === o.sceneId;
       // Pane key = paneId + datasetId + sceneId: a different scene starts from a clean UI state.
-      const base: PaneState = same ? cur : { ...initialPane(), classMode: cur.classMode, layers: cur.layers, speed: cur.speed, paneView: cur.paneView };
+      const base: PaneState = same ? cur : { ...initialPane(), classMode: cur.classMode, layers: cur.layers, speed: cur.speed, paneView: cur.paneView, generation: nextGeneration() };
       const next: PaneState = { ...base, datasetId: o.datasetId, sceneId: o.sceneId };
       if (o.sampleToken !== undefined && o.sampleToken !== next.requestedSampleToken) {
         next.requestedSampleToken = o.sampleToken;
@@ -114,7 +124,13 @@ export const useWorkspace = create<WorkspaceStore>()((set) => ({
       return patch(s, pane, next);
     }),
 
-  closePane: (pane) => set((s) => patch(s, pane, initialPane())),
+  closePane: (pane) => set((s) => patch(s, pane, { ...initialPane(), generation: nextGeneration() })),
+  resetServerContext: () =>
+    set((s) => {
+      // A different backend instance: job/recording ids of the old one mean nothing here.
+      const clear = (p: PaneState): PaneState => ({ ...p, jobId: null, resultJobId: null, recordingId: null, selectedBoxKey: null, generation: nextGeneration() });
+      return { panes: { single: clear(s.panes.single), A: clear(s.panes.A), B: clear(s.panes.B) } };
+    }),
 
   requestSample: (pane, token, origin) =>
     set((s) => {

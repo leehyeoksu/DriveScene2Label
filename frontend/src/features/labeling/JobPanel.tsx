@@ -1,15 +1,19 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Box, RefreshCw, Sparkles } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { Box, RefreshCw, ShieldAlert, Sparkles } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { ClassMode } from '@/api/dto';
 import { describeError, isApiError } from '@/api/http';
 import type { SampleRef, Scene } from '@/api/models';
-import { jobResultsQuery, jobStatusQuery, qk } from '@/api/queries';
+import { jobResultsQuery, jobStatusQuery } from '@/api/queries';
 import { CLASS_COLORS, CLASS_MODES } from '@/lib/classes';
-import { createJob, elapsedMs, formatElapsed, newRunIntent, type RunIntent } from '@/lib/jobs/createJob';
-import { findReceipt, receiptsForScene, saveReceipt } from '@/lib/jobs/receipts';
+import { elapsedMs, formatElapsed } from '@/lib/jobs/createJob';
+import { findReceipt, receiptsForScene } from '@/lib/jobs/receipts';
+import { dismissJobSubmission, newJobSnapshot, submitJob, useSubmissions } from '@/lib/jobs/submissions';
+import { errorGuide } from '@/lib/errorCodes';
 import { useNow } from '@/hooks/useNow';
-import { toast } from '@/stores/toast';
+import { capabilityMessage, stateLabel } from '@/api/system';
+import { useSystemStatus } from '@/features/system/useSystemStatus';
+import { useServer } from '@/stores/server';
 import { useWorkspace, type PaneId } from '@/stores/workspace';
 import { pollInterval, STATUS_KO, verifyJob } from './jobLogic';
 import { useReceipts } from './useReceipts';
@@ -32,16 +36,20 @@ export function JobPanel({ paneId, scene, samples, paneLabel }: Props) {
   const watchJob = useWorkspace((s) => s.watchJob);
   const showResult = useWorkspace((s) => s.showResult);
   const setClassMode = useWorkspace((s) => s.setClassMode);
-  const qc = useQueryClient();
+  const scope = useServer((s) => s.scope);
   const receipts = useReceipts();
-  const sceneReceipts = useMemo(() => receiptsForScene(receipts, scene.datasetId, scene.token), [receipts, scene.datasetId, scene.token]);
+  const sceneReceipts = useMemo(() => receiptsForScene(receipts, scope, scene.datasetId, scene.token), [receipts, scope, scene.datasetId, scene.token]);
+  const system = useSystemStatus(scene.datasetId);
+  const vespa = system.capability('vespa');
   const sampleTokens = useMemo(() => new Set(samples.map((s) => s.token)), [samples]);
   const jobId = pane.jobId;
 
-  // Restore: no job in the URL → the newest receipt of this scene (shared by every pane showing the scene).
+  // The pane may still hold the previous scene for one render after navigation; act only on a matching pane.
+  const paneMatches = pane.datasetId === scene.datasetId && pane.sceneId === scene.id;
+  // Restore: no job selected → the newest receipt of this scene on this server (shared by every pane showing the scene).
   useEffect(() => {
-    if (jobId == null && sceneReceipts[0]) watchJob(paneId, sceneReceipts[0].jobId);
-  }, [jobId, sceneReceipts, paneId, watchJob]);
+    if (paneMatches && jobId == null && sceneReceipts[0]) watchJob(paneId, sceneReceipts[0].jobId);
+  }, [paneMatches, pane.generation, jobId, sceneReceipts, paneId, watchJob]);
 
   const statusQ = useQuery({
     ...jobStatusQuery(jobId ?? -1),
@@ -52,37 +60,38 @@ export function JobPanel({ paneId, scene, samples, paneLabel }: Props) {
   const status = statusQ.data;
   const completed = status?.status === 'COMPLETED';
   const resultsQ = useQuery({ ...jobResultsQuery(jobId ?? -1), enabled: jobId != null && completed });
-  const receipt = jobId != null ? findReceipt(receipts, jobId) : undefined;
+  const receipt = jobId != null ? findReceipt(receipts, scope, jobId) : undefined;
   const ownership = jobId != null ? verifyJob(scene, sampleTokens, status, receipt, resultsQ.data) : null;
 
   useEffect(() => {
-    if (jobId != null && completed && ownership?.kind === 'verified') showResult(paneId, jobId);
-  }, [jobId, completed, ownership?.kind, paneId, showResult]);
+    if (paneMatches && jobId != null && completed && ownership?.kind === 'verified') showResult(paneId, jobId);
+  }, [paneMatches, jobId, completed, ownership?.kind, paneId, showResult]);
 
   const active = status?.status === 'PENDING' || status?.status === 'RUNNING';
   const now = useNow(active ? 1000 : null);
 
-  const [pendingIntent, setPendingIntent] = useState<RunIntent | null>(null);
-  const run = useMutation({
-    mutationFn: (intent: RunIntent) => createJob(intent),
-    onMutate: (intent) => setPendingIntent(intent),
-    onSuccess: (created, intent) => {
-      saveReceipt({
-        jobId: created.jobId, datasetId: scene.datasetId, sceneId: scene.id, sceneToken: scene.token, sceneName: scene.name,
-        classMode: intent.body.classMode, idempotencyKey: intent.key, requestedAt: Date.now(),
-      });
-      setPendingIntent(null);
-      void qc.invalidateQueries({ queryKey: qk.jobStatus(created.jobId) });
-      watchJob(paneId, created.jobId);
-      toast(`작업 #${created.jobId}을 만들었어요`, 'ok');
-    },
-  });
-  const lostResponse = run.isError && isApiError(run.error) && run.error.transient;
-  const startNewRun = () => run.mutate(newRunIntent({ sceneToken: scene.token, datasetId: scene.datasetId, classMode: pane.classMode }));
-  const resendSame = () => { if (pendingIntent) run.mutate(pendingIntent); };
+  // In-flight requests made from this pane for this scene in this UI context (they outlive this component).
+  const submission = useSubmissions((st) => Object.values(st.jobs).find((j) =>
+    j.snapshot.paneId === paneId && j.snapshot.sceneId === scene.id && j.snapshot.instanceId === scope && j.snapshot.generation === pane.generation));
+  const posting = submission?.status === 'pending';
+  const failedPost = submission?.status === 'error' ? submission : undefined;
+  const lostResponse = !!failedPost && isApiError(failedPost.error) && failedPost.error.transient;
+  const currentScope = () => useServer.getState().scope;
+  const startNewRun = () => {
+    if (failedPost) dismissJobSubmission(failedPost.snapshot.idempotencyKey);
+    const snapshot = newJobSnapshot({
+      instanceId: scope, datasetId: scene.datasetId, datasetChecksum: system.status?.dataset?.metadataChecksum ?? null,
+      sceneId: scene.id, sceneToken: scene.token, sceneName: scene.name, paneId, generation: pane.generation,
+    }, pane.classMode);
+    void submitJob(snapshot, currentScope);
+  };
+  const resendSame = () => { if (failedPost) void submitJob(failedPost.snapshot, currentScope); };
 
-  const busy = run.isPending || (active && ownership?.kind !== 'mismatch');
-  const label = run.isPending ? '요청 보내는 중' : busy ? '작업 진행 중' : paneLabel ? `씬 ${paneLabel} 전체 라벨 생성` : '씬 전체 라벨 생성';
+  const busy = posting || (active && ownership?.kind !== 'mismatch');
+  const blocked = !vespa.canExecute;
+  const label = posting ? '요청 보내는 중' : busy ? '작업 진행 중' : paneLabel ? `씬 ${paneLabel} 전체 라벨 생성` : '씬 전체 라벨 생성';
+  const guide = errorGuide(status?.errorCode);
+  const remote = vespa.executor === 'ssh';
 
   return (
     <>
@@ -106,23 +115,24 @@ export function JobPanel({ paneId, scene, samples, paneLabel }: Props) {
             {CLASS_MODES[pane.classMode].map((c) => <span key={c} className="cls-chip"><i className="cls-dot" style={{ ['--c' as string]: CLASS_COLORS[c] }} />{c}</span>)}
           </div>
         </div>
-        <button type="button" className="btn btn--primary btn--block" onClick={startNewRun} disabled={busy}>
+        <ReadinessBox paneId={paneId} vespa={vespa} refreshing={system.refreshing} onRefresh={() => void system.refresh()} />
+        <button type="button" className="btn btn--primary btn--block" onClick={startNewRun} disabled={busy || blocked} data-testid={`run-job-${paneId}`}>
           {busy ? <span className="spin" aria-hidden="true" /> : <Sparkles className="icon" aria-hidden="true" />}{label}
         </button>
-        {busy && !run.isPending && <p className="help">진행 중인 작업이 끝나면 다시 실행할 수 있어요.</p>}
-        {run.isError && (
+        {busy && !posting && <p className="help">진행 중인 작업이 끝나면 다시 실행할 수 있어요.</p>}
+        {failedPost && (
           <div className={lostResponse ? 'alert alert--warn' : 'alert'} role="alert">
             {lostResponse ? (
               <>
                 <b>요청 결과를 확인하지 못했어요</b>
                 서버가 요청을 받았을 수 있어요. 같은 요청을 다시 보내면 이미 만들어진 작업이 있을 때 그 작업을 그대로 돌려받아요.
-                <span className="mono">{describeError(run.error)}</span>
-                <button type="button" className="btn btn--sm btn--weak" onClick={resendSame}><RefreshCw className="icon" aria-hidden="true" />같은 요청 다시 보내기</button>
+                <span className="mono">{describeError(failedPost.error)}</span>
+                <button type="button" className="btn btn--sm btn--weak" onClick={resendSame} disabled={posting}><RefreshCw className="icon" aria-hidden="true" />같은 요청 다시 보내기</button>
               </>
             ) : (
               <>
                 <b>작업을 만들지 못했어요</b>
-                <span className="mono">{describeError(run.error)}</span>
+                <span className="mono">{describeError(failedPost.error)}</span>
               </>
             )}
           </div>
@@ -175,16 +185,21 @@ export function JobPanel({ paneId, scene, samples, paneLabel }: Props) {
             {active && (
               <>
                 <div className={status.status === 'PENDING' ? 'indet indet--pending' : 'indet'} />
-                <p className="help">{status.status === 'PENDING' ? '작업 대기열에 있어요.' : 'VESPA가 씬 전체를 처리하고 있어요.'} 진행률은 제공되지 않아 단계나 퍼센트는 표시하지 않아요.</p>
+                <p className="help">
+                  {status.status === 'PENDING' ? '작업 대기열에 있어요.' : remote ? '원격 클러스터에서 처리 중이에요. 대기열 대기와 실제 계산 단계는 구분해 알 수 없어요.' : 'VESPA가 씬 전체를 처리하고 있어요.'} 진행률은 제공되지 않아 단계나 퍼센트는 표시하지 않아요.
+                </p>
               </>
             )}
 
             {status?.status === 'FAILED' && (
-              <div className="alert" role="alert">
-                <b>작업이 실패했어요</b>
-                원인을 확인한 뒤 새 작업으로 다시 실행해 주세요. GT와 이전 결과는 그대로 남아 있어요.
-                <span className="mono">{status.errorMessage || '오류 메시지 없음'}</span>
-                <button type="button" className="btn btn--sm btn--weak" onClick={startNewRun} disabled={run.isPending}><RefreshCw className="icon" aria-hidden="true" />새 작업으로 다시 실행</button>
+              <div className="alert" role="alert" data-error-code={status.errorCode ?? ''}>
+                <b>{guide?.title ?? '작업이 실패했어요'}</b>
+                {guide ? guide.action : '원인을 확인한 뒤 새 작업으로 다시 실행해 주세요.'} GT와 이전 결과는 그대로 남아 있어요.
+                <span className="mono">{status.errorCode ? `${status.errorCode} · ` : ''}{status.errorMessage || '오류 메시지 없음'}</span>
+                <button type="button" className="btn btn--sm btn--weak" onClick={startNewRun} disabled={posting || blocked}>
+                  <RefreshCw className="icon" aria-hidden="true" />{guide?.environment ? '환경 확인 후 새 작업으로 다시 실행' : '새 작업으로 다시 실행'}
+                </button>
+                {blocked && <span className="help">실행 환경이 준비되지 않아 다시 실행할 수 없어요.</span>}
               </div>
             )}
 
@@ -264,5 +279,27 @@ function JobLookup({ onOpen }: { onOpen: (id: number) => void }) {
       <input id="job-lookup" inputMode="numeric" placeholder="작업 번호로 열기" value={value} onChange={(e) => setValue(e.currentTarget.value.trim())} />
       <button type="submit" className="btn btn--sm" disabled={!valid}>열기</button>
     </form>
+  );
+}
+
+function ReadinessBox({ paneId, vespa, refreshing, onRefresh }: { paneId: PaneId; vespa: import('@/api/system').Capability; refreshing: boolean; onRefresh: () => void }) {
+  if (vespa.canExecute) {
+    return (
+      <p className="help" data-testid={`vespa-ready-${paneId}`}>
+        실행 환경 확인됨 · {vespa.executor === 'ssh' ? '원격 클러스터(SSH)' : '로컬'} 실행. 실제 추론 성공을 보장하는 확인은 아니에요.
+      </p>
+    );
+  }
+  const fixedByRefresh = !['SYNTHETIC_DATASET', 'VESPA_WORKER_DISABLED', 'DATASET_MISMATCH'].includes(vespa.reasonCode ?? '');
+  return (
+    <div className="readiness readiness--blocked" role="status" data-testid={`vespa-readiness-${paneId}`} data-state={vespa.state} data-reason={vespa.reasonCode ?? ''}>
+      <div className="row"><ShieldAlert className="icon" aria-hidden="true" /><b>라벨 생성 {stateLabel(vespa.state)}</b>{vespa.executor && <span className="dim">· {vespa.executor === 'ssh' ? '원격(SSH)' : '로컬'}</span>}</div>
+      <div>{capabilityMessage(vespa)} 기존 완료 결과 조회와 센서 탐색은 그대로 쓸 수 있어요.</div>
+      {fixedByRefresh && (
+        <button type="button" className="btn btn--sm btn--weak" onClick={onRefresh} disabled={refreshing}>
+          {refreshing ? <span className="spin" aria-hidden="true" /> : <RefreshCw className="icon" aria-hidden="true" />}실행 환경 확인
+        </button>
+      )}
+    </div>
   );
 }

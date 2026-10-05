@@ -5,7 +5,7 @@ import { boxKeyForSelection, indexForSample } from '@/features/viewer/recordingM
 import { jobResultsDto, jobStatusDto } from '@/test/fixtures';
 import { comparisonClass } from './classes';
 import { createJob, elapsedMs, newRunIntent } from './jobs/createJob';
-import { _resetReceiptCache, loadReceipts, receiptsForScene, saveReceipt } from './jobs/receipts';
+import { _resetReceiptCache, findReceipt, loadReceipts, migrateLegacyReceipts, receiptsForScene, saveReceipt } from './jobs/receipts';
 import { mapRelative, nearestIndex, playbackDelayMs, relativeProgress } from './time/timeline';
 import type { Recording } from '@/api/models';
 
@@ -73,18 +73,38 @@ describe('job creation idempotency', () => {
   });
 });
 
-describe('job receipts', () => {
+describe('job receipts (instance scoped)', () => {
   beforeEach(() => { localStorage.clear(); _resetReceiptCache(); });
-  it('stores small receipts per scene and survives reload', () => {
-    saveReceipt({ jobId: 1, datasetId: 1, sceneId: 7, sceneToken: 'a', sceneName: 'scene-0061', classMode: 8, idempotencyKey: 'k1', requestedAt: 1 });
-    saveReceipt({ jobId: 2, datasetId: 1, sceneId: 8, sceneToken: 'b', sceneName: 'scene-0103', classMode: 3, idempotencyKey: 'k2', requestedAt: 2 });
+  const base = { datasetId: 1, sceneId: 7, sceneToken: 'a', sceneName: 'scene-0061', classMode: 8 as const, idempotencyKey: 'k', requestedAt: 1, datasetChecksum: null, paneId: 'single' };
+  it('keeps receipts of different servers apart (job 2 of DB-x is not job 2 of DB-y)', () => {
+    saveReceipt({ ...base, instanceId: 'db-x', jobId: 2 });
+    saveReceipt({ ...base, instanceId: 'db-y', jobId: 2, sceneToken: 'b', requestedAt: 2 });
     _resetReceiptCache();
-    expect(receiptsForScene(loadReceipts(), 1, 'a').map((r) => r.jobId)).toEqual([1]);
+    expect(receiptsForScene(loadReceipts(), 'db-x', 1, 'a').map((r) => r.jobId)).toEqual([2]);
+    expect(receiptsForScene(loadReceipts(), 'db-y', 1, 'a')).toEqual([]);
+    expect(findReceipt(loadReceipts(), 'db-y', 2)?.sceneToken).toBe('b');
   });
   it('ignores corrupt storage', () => {
-    localStorage.setItem('ds2l.jobReceipts', '{"v":1,"data":[{"jobId":"x"}]}');
+    localStorage.setItem('ds2l.jobReceipts.v2', '{"v":2,"data":[{"jobId":"x"}]}');
     _resetReceiptCache();
     expect(loadReceipts()).toEqual([]);
+  });
+  it('migrates v1 receipts only when the server confirms dataset and scene', async () => {
+    const legacy = (jobId: number, sceneToken: string) => ({ jobId, datasetId: 1, sceneId: 7, sceneToken, sceneName: 's', classMode: 8, idempotencyKey: `k${jobId}`, requestedAt: jobId });
+    localStorage.setItem('ds2l.jobReceipts', JSON.stringify({ v: 1, data: [legacy(1, 'a'), legacy(2, 'a'), legacy(3, 'a')] }));
+    const server: Record<number, { datasetId: number; sceneToken: string | null } | null> = {
+      1: { datasetId: 1, sceneToken: 'a' }, // confirmed
+      2: { datasetId: 1, sceneToken: 'other' }, // same id, other scene: another DB
+      3: null, // unknown on this server
+    };
+    expect(await migrateLegacyReceipts('db-z', async (id) => server[id] ?? null)).toBe(1);
+    expect(loadReceipts().map((r) => [r.instanceId, r.jobId])).toEqual([['db-z', 1]]);
+    expect(await migrateLegacyReceipts('db-z', async () => { throw new Error('must not run twice'); })).toBe(0);
+  });
+  it('does not mark migration done while the server is unreachable', async () => {
+    localStorage.setItem('ds2l.jobReceipts', JSON.stringify({ v: 1, data: [{ jobId: 1, datasetId: 1, sceneId: 7, sceneToken: 'a', sceneName: 's', classMode: 8, idempotencyKey: 'k', requestedAt: 1 }] }));
+    await migrateLegacyReceipts('db-q', async () => { throw new Error('down'); });
+    expect(await migrateLegacyReceipts('db-q', async () => ({ datasetId: 1, sceneToken: 'a' }))).toBe(1);
   });
 });
 
@@ -128,7 +148,7 @@ describe('Rerun selection → box key', () => {
       { index: 0, sampleToken: 's0', timestampUs: 0, lidarPoints: 10, gtAnnotationIds: [11, 12], predictionIds: [900] },
       { index: 1, sampleToken: 's1', timestampUs: 1, lidarPoints: 10, gtAnnotationIds: [13], predictionIds: [] },
     ],
-    contentUrl: '/api/recordings/5/content', sizeBytes: 1, errorMessage: null, createdAt: 0,
+    contentUrl: '/api/recordings/5/content', sizeBytes: 1, errorMessage: null, errorCode: null, createdAt: 0,
   };
   it('maps entity + instance within the current sample only', () => {
     expect(boxKeyForSelection(rec, 'world/gt', 1, 0)).toBe('GT:1:s0:12');

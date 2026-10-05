@@ -134,7 +134,7 @@ test.describe('3D recording', () => {
     await page.goto(ws(21));
     await page.getByRole('button', { name: /3D recording 만들기/ }).click();
     await expect(page.getByText('3D recording을 만들지 못했어요')).toBeVisible();
-    await expect(page.getByText(/EXPORTER_FAILED/)).toBeVisible();
+    await expect(page.getByText(/RECORDING_EXPORT_FAILED/)).toBeVisible();
     await page.getByRole('button', { name: 'recording 다시 만들기' }).click();
     await expect(page.getByTestId('recording-badge')).toBeVisible();
     expect(log.recordingPosts).toHaveLength(2);

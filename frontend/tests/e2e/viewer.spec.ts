@@ -72,4 +72,19 @@ test.describe('Rerun Web Viewer 0.38.1', () => {
     // the matching row in the object list is pressed (same key as the camera overlay)
     await expect(page.locator('.obj-row[aria-pressed="true"]')).toHaveCount(1);
   });
+
+  test('IT-09: a failed download of a READY recording is re-opened without creating anything', async ({ page }) => {
+    test.setTimeout(150_000);
+    const log = await installMockApi(page, { recording: 'ready', rrdPath: RRD, contentFailures: 1 });
+    await page.goto(`/scenes/21?dataset=${DATASET.id}`);
+    await expect(page.getByTestId('viewer-download-error')).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByTestId('viewer-download-error')).toContainText('HTTP 500');
+    await page.getByTestId('reopen-recording').click();
+    const host = page.getByTestId('rerun-host');
+    await expect(host).toHaveAttribute('data-phase', 'ready', { timeout: 120_000 });
+    await expect(host).toHaveAttribute('data-attempt', '1');
+    expect(log.contentGets).toBe(2);
+    expect(log.recordingPosts).toHaveLength(0);
+    expect(log.jobPosts).toHaveLength(0);
+  });
 });

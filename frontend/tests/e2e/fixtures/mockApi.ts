@@ -66,9 +66,27 @@ export interface MockOptions {
   rrdPath?: string;
   /** Search response mode. */
   search?: 'hits' | 'empty' | 'error';
+  /** GET /api/system/status behaviour (default: UNKNOWN origin, every feature READY). 'missing' = older backend (404). */
+  status?: {
+    origin?: 'SYNTHETIC' | 'NUSCENES' | 'UNKNOWN';
+    vespa?: 'READY' | 'CONFIGURED' | 'UNAVAILABLE' | 'configured-then-ready';
+    vespaReason?: string;
+    search?: 'READY' | 'UNAVAILABLE';
+    recording?: 'READY' | 'UNAVAILABLE';
+    instanceId?: string;
+    missing?: boolean;
+  };
+  /** Delay (ms) before answering job POSTs. */
+  postDelayMs?: number;
+  /** First N recording content GETs fail with 500. */
+  contentFailures?: number;
+  /** errorCode on a FAILED job 41. */
+  failedErrorCode?: string | null;
 }
 
 export interface MockLog {
+  statusCalls: Array<{ datasetId: string | null; refresh: boolean }>;
+  contentGets: number;
   jobPosts: Array<{ key: string | null; body: unknown }>;
   recordingPosts: Array<{ sceneId: number; body: unknown }>;
   statusGets: number;
@@ -90,7 +108,9 @@ export function gtFor(sid: number) {
 }
 
 export async function installMockApi(page: Page, opts: MockOptions = {}): Promise<MockLog> {
-  const log: MockLog = { jobPosts: [], recordingPosts: [], statusGets: 0, resultGets: 0 };
+  const log: MockLog = { statusCalls: [], contentGets: 0, jobPosts: [], recordingPosts: [], statusGets: 0, resultGets: 0 };
+  let contentFailures = opts.contentFailures ?? 0;
+  let vespaRefreshed = false;
   let postAborts = opts.postAborts ?? 0;
   let resultsFailures = opts.resultsFailures ?? 0;
   const seq = opts.jobSequence ?? ['PENDING', 'RUNNING', 'COMPLETED'];
@@ -104,6 +124,35 @@ export async function installMockApi(page: Page, opts: MockOptions = {}): Promis
     const m = (re: RegExp) => p.match(re);
     let r: RegExpMatchArray | null;
 
+    if (p === '/api/system/status') {
+      const refresh = url.searchParams.get('refresh') === 'true';
+      log.statusCalls.push({ datasetId: url.searchParams.get('datasetId'), refresh });
+      const st = opts.status ?? {};
+      if (st.missing) return json(route, { timestamp: '2026-10-05T00:00:00Z', status: 404, error: 'Not Found', path: p }, 404);
+      if (refresh) vespaRefreshed = true;
+      const now = new Date().toISOString();
+      const later = new Date(Date.now() + 600_000).toISOString();
+      const cap = (state: string, reasonCode: string | null, message: string | null, extra: Record<string, unknown> = {}) =>
+        ({ state, canExecute: state === 'READY', reasonCode, message, checkedAt: now, expiresAt: later, ...extra });
+      const origin = st.origin ?? 'UNKNOWN';
+      let vespa = cap('READY', null, null, { executor: 'local' });
+      const mode = st.vespa ?? 'READY';
+      if (origin === 'SYNTHETIC') vespa = cap('UNAVAILABLE', 'SYNTHETIC_DATASET', '테스트(합성) 데이터에서는 실제 VESPA 실행을 막아 두었어요.', { executor: 'local' });
+      else if (mode === 'CONFIGURED' || (mode === 'configured-then-ready' && !vespaRefreshed)) vespa = cap('CONFIGURED', 'EXECUTOR_NOT_CHECKED', 'VESPA 설정은 있지만 실행 환경을 아직 확인하지 않았어요.', { executor: 'local' });
+      else if (mode === 'UNAVAILABLE') vespa = cap('UNAVAILABLE', st.vespaReason ?? 'VESPA_NOT_CONFIGURED', 'VESPA 실행 환경이 설정되지 않았어요.', { executor: 'local' });
+      const ds = url.searchParams.get('datasetId');
+      return json(route, {
+        schemaVersion: 1, instanceId: st.instanceId ?? '11111111-1111-4111-8111-111111111111', checkedAt: now,
+        dataset: ds ? { id: Number(ds), version: 'v1.0-mini', origin, metadataChecksum: 'c'.repeat(64), mediaValidation: 'PARTIAL' } : null,
+        capabilities: {
+          catalog: cap('READY', null, null),
+          media: { ...cap('CONFIGURED', 'MEDIA_NOT_FULLY_VALIDATED', '센서 파일 일부만 확인했어요.'), canExecute: true },
+          search: st.search === 'UNAVAILABLE' ? cap('UNAVAILABLE', 'EMBEDDINGS_NOT_READY', '이 데이터셋의 검색 인덱스(이미지 임베딩)가 아직 없어요.') : cap('READY', null, '검색 인덱스 이미지 10개'),
+          vespa,
+          recording: st.recording === 'UNAVAILABLE' ? cap('UNAVAILABLE', 'RECORDING_NOT_CONFIGURED', '3D recording exporter가 설정되지 않았어요.') : cap('READY', null, null),
+        },
+      });
+    }
     if (p === '/api/datasets') return json(route, [DATASET]);
     if ((r = m(/^\/api\/datasets\/(\d+)\/scenes$/))) {
       if (Number(r[1]) !== DATASET.id) return json(route, { code: 'HTTP_404', message: 'Record not found' }, 404);
@@ -157,6 +206,7 @@ export async function installMockApi(page: Page, opts: MockOptions = {}): Promis
     }
     if (p === '/api/auto-label/jobs' && req.method() === 'POST') {
       log.jobPosts.push({ key: req.headers()['idempotency-key'] ?? null, body: req.postDataJSON() });
+      if (opts.postDelayMs) await new Promise((res) => setTimeout(res, opts.postDelayMs));
       if (postAborts > 0) { postAborts--; return route.abort('connectionreset'); }
       return json(route, { jobId: 41, status: 'PENDING' }, 202);
     }
@@ -169,7 +219,8 @@ export async function installMockApi(page: Page, opts: MockOptions = {}): Promis
       if (st === 503) return json(route, { code: 'DATABASE_UNAVAILABLE', message: 'Database operation unavailable' }, 503);
       const done = st === 'COMPLETED' || st === 'FAILED';
       return json(route, {
-        jobId: 41, datasetId: DATASET.id, status: st, errorMessage: st === 'FAILED' ? 'AI request failed or timed out' : null,
+        jobId: 41, datasetId: DATASET.id, status: st, errorMessage: st === 'FAILED' ? (opts.failedErrorCode === 'AI_ENDPOINT_UNSUPPORTED' ? 'AI server has no /auto-label endpoint (HTTP 404)' : 'AI request failed or timed out') : null,
+        errorCode: st === 'FAILED' ? (opts.failedErrorCode ?? null) : null,
         createdAt: '2026-10-03T12:00:00Z', startedAt: st === 'PENDING' ? null : '2026-10-03T12:00:01Z', completedAt: done ? '2026-10-03T12:02:31Z' : null,
         sceneToken: 'scene-tok-61', sceneId: 21, sceneName: 'scene-0061', classMode: 8, mappingName: '8class',
       });
@@ -202,6 +253,8 @@ export async function installMockApi(page: Page, opts: MockOptions = {}): Promis
       return json(route, recordingView(id, st.status, st.jobId, 21));
     }
     if ((r = m(/^\/api\/recordings\/(\d+)\/content$/))) {
+      log.contentGets++;
+      if (contentFailures > 0) { contentFailures--; return json(route, { code: 'HTTP_500', message: 'boom' }, 500); }
       if (!opts.rrdPath || !existsSync(opts.rrdPath)) return json(route, { code: 'HTTP_404', message: 'Recording file not found' }, 404);
       return route.fulfill({ status: 200, contentType: 'application/octet-stream', body: readFileSync(opts.rrdPath) });
     }
@@ -219,7 +272,7 @@ function recordingView(id: number, status: string, jobId: number | null, sceneId
     coordinateFrame: 'WORLD', applicationId: ready ? 'drivescene2label' : null, rerunRecordingId: ready ? `ds2l-recording-${id}` : null, timeline: ready ? 'sample' : null, timeTimeline: ready ? 'timestamp' : null,
     entities: ready ? { lidar: 'world/lidar', ego: 'world/ego', gt: 'world/gt', prediction: jobId != null ? 'world/prediction' : null } : null,
     samples: ready ? smp.map((s, i) => ({ index: i, sampleToken: s.token, timestampUs: s.timestampUs, lidarPoints: 1321, gtAnnotationIds: gtFor(s.id).map((g) => g.id), predictionIds: [] })) : [],
-    contentUrl: ready ? `/api/recordings/${id}/content` : null, sizeBytes: ready ? 98292 : null, errorMessage: status === 'FAILED' ? 'AI recording export failed (HTTP 502 EXPORTER_FAILED)' : null,
+    contentUrl: ready ? `/api/recordings/${id}/content` : null, sizeBytes: ready ? 98292 : null, errorMessage: status === 'FAILED' ? 'AI recording export failed (HTTP 502 RECORDING_EXPORT_FAILED)' : null, errorCode: status === 'FAILED' ? 'RECORDING_EXPORT_FAILED' : null,
     createdAt: '2026-10-03T12:10:00Z', startedAt: null, completedAt: null,
   };
 }

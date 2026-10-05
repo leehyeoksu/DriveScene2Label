@@ -12,6 +12,7 @@ import { useScene } from '@/features/scenes/useScene';
 import { FrameTimeline } from '@/features/timeline/FrameTimeline';
 import { usePlaybackLifecycle, useWorkspaceShortcuts } from '@/features/workspace/hooks';
 import { SinglePaneView } from '@/features/workspace/PaneView';
+import { DataOriginBadge } from '@/features/system/DataOriginBadge';
 import { useLayout } from '@/stores/layout';
 import { toast } from '@/stores/toast';
 import { useWorkspace } from '@/stores/workspace';
@@ -104,6 +105,7 @@ export default function SceneWorkspacePage() {
           <h1 className="crumb-title">{scene.name}</h1>
           <span className="crumb-sub">{scene.description}</span>
         </div>
+        <DataOriginBadge datasetId={scene.datasetId} />
         <div className="seg seg--modes" role="group" aria-label="보기 모드">
           <button type="button" aria-pressed={params.view === 'split'} onClick={() => setView('split')}><SplitSquareHorizontal className="icon" aria-hidden="true" /><span className="lbl">카메라 + LiDAR</span></button>
           <button type="button" aria-pressed={params.view === 'six'} onClick={() => setView('six')}><Grid3x3 className="icon" aria-hidden="true" /><span className="lbl">6개 카메라</span></button>

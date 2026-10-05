@@ -100,18 +100,24 @@ export function qs(params: Record<string, string | number | boolean | undefined 
   return s ? `?${s}` : '';
 }
 
-/** Short Korean message for UI. Keeps 404/409 meaning distinct from connection failures. */
+/**
+ * Short Korean message for UI. Keeps 404/409 meaning distinct from connection failures. A stable server code (e.g.
+ * VESPA_NOT_CONFIGURED from a readiness check) is shown with the server's own message. A bare 502/504 means a
+ * gateway/upstream failure, not a model failure.
+ */
 export function describeError(e: unknown): string {
   if (!isApiError(e)) return '알 수 없는 오류가 발생했어요';
   if (e.kind === 'network') return '서버에 연결할 수 없어요';
   if (e.kind === 'format') return '서버 응답 형식을 읽을 수 없어요';
   if (e.kind === 'aborted') return '요청이 취소되었어요';
+  if (e.code && !/^HTTP_\d+$/.test(e.code) && e.code !== 'INVALID_REQUEST') return e.message;
   switch (e.status) {
     case 400: return `요청을 확인해 주세요 (${e.message})`;
     case 404: return '대상을 찾을 수 없어요';
     case 409: return `지금 처리할 수 없는 요청이에요 (${e.message})`;
-    case 502: return 'AI 서비스 응답에 문제가 있어요';
+    case 502: return '중계 서버가 상위 서비스의 올바른 응답을 받지 못했어요 (HTTP 502)';
     case 503: return '서비스를 일시적으로 사용할 수 없어요';
+    case 504: return '상위 서비스 응답 시간이 초과됐어요 (HTTP 504)';
     default: return `서버 오류가 발생했어요 (HTTP ${e.status ?? '?'})`;
   }
 }
