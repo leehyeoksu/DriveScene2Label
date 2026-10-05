@@ -141,6 +141,15 @@ export function RecordingPanel({ paneId, scene, enabled }: Props) {
       </div>
     );
   }
+  if (status === 'READY') {
+    // READY in the list, detail (with the content URL) still loading or failed to load.
+    return (
+      <div className="lidar-state" role="status">
+        {detailQ.isError ? <b>3D recording 정보를 불러오지 못했어요</b> : <><span className="spin" aria-hidden="true" /><b>3D recording 정보를 불러오고 있어요</b></>}
+        {detailQ.isError && <><span className="mono">{describeError(detailQ.error)}</span><button type="button" className="btn btn--sm btn--weak" onClick={() => void detailQ.refetch()}>다시 확인</button></>}
+      </div>
+    );
+  }
   return (
     <div className="lidar-state" role="status">
       <span className="spin" aria-hidden="true" />

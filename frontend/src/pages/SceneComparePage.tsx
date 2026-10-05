@@ -66,6 +66,7 @@ export default function SceneComparePage() {
   useEffect(() => {
     if (paneA.playing || paneB.playing || framesA.buffering || framesB.buffering) return;
     const t = window.setTimeout(() => {
+      if (window.location.pathname !== '/compare') return; // navigated away meanwhile: never undo that
       const url = compareUrl({
         A: { datasetId: paneA.datasetId, sceneId: paneA.sceneId, sample: paneA.displayedSampleToken, job: paneA.jobId },
         B: { datasetId: paneB.datasetId, sceneId: paneB.sceneId, sample: paneB.displayedSampleToken, job: paneB.jobId },

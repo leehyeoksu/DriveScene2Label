@@ -142,4 +142,17 @@ class AutoLabelTests {
   assertThat(jdbc.sql("SELECT count(*) FROM auto_label_artifact WHERE job_id=:j").param("j",job).query(Long.class).single()).isZero();
   assertThat(jdbc.sql("SELECT count(*) FROM auto_label_job_sample WHERE job_id=:j AND result_received_at IS NOT NULL").param("j",job).query(Long.class).single()).isZero();
  }
+ @Test void lateResultAfterOperatorFailureIsRejected() throws Exception {
+  // IT-18 (controlled): the worker lost contact, an operator marked the RUNNING job FAILED, then the old run answers.
+  long job=create("late");
+  var work=jobs.claim().orElseThrow();
+  assertThat(work.id()).isEqualTo(job);
+  var late=client.run(work); // the fake AI answers for the old execution token
+  jdbc.sql("UPDATE auto_label_job SET status='FAILED',completed_at=now(),failure_reason='operator: worker lost',error_code='RESULT_STORAGE_FAILED' WHERE id=:j AND status='RUNNING'").param("j",job).update();
+  assertThatThrownBy(()->jobs.complete(work,late)).isInstanceOf(IllegalStateException.class);
+  assertThat(jobs.status(job).status()).isEqualTo("FAILED"); assertThat(boxes(job)).isZero();
+  // a stale fail() from the old execution does not overwrite the operator's record either
+  jobs.fail(work,"AI_TIMEOUT","late timeout");
+  assertThat(jobs.status(job).errorMessage()).isEqualTo("operator: worker lost");
+ }
 }

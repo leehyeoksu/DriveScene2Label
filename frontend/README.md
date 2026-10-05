@@ -30,8 +30,16 @@ DS2L_RRD=/path/to/scene-test.rrd npx playwright test tests/e2e/viewer.spec.ts --
 실행 중인 Spring을 대상으로 한 live 검증(route mock 없음, 데이터 내용과 무관한 검사):
 
 ```bash
-DS2L_API=http://127.0.0.1:8080 npx playwright test -c playwright.live.config.ts
+DS2L_API=http://127.0.0.1:8080 npx playwright test -c playwright.live.config.ts tests/live/live.spec.ts
 # 선택: DS2L_LIVE_JOB_ID=<기존 job>  /  DS2L_LIVE_ALLOW_POST=1 (recording 생성 허용)
+# 이미 떠 있는 앱을 쓰려면 DS2L_BASE_URL=http://127.0.0.1:5174 (빌드·preview 생략)
+```
+
+`live.spec.ts`는 데이터와 무관한 점검이라 검색 오류·빈 결과·recording FAILED도 "표시됨"으로 통과한다(장애 안내 확인용). **실제 nuScenes 성공 검증은 `actual-mini.spec.ts`**이며 출처 NUSCENES, 여러 프레임의 6카메라 ready, API와 같은 GT 수, LIDAR_TOP 존재를 모두 요구한다. 합성/출처 미확인 데이터에서는 실패한다.
+
+```bash
+DS2L_ACTUAL=1 DS2L_API=http://127.0.0.1:8080 [DS2L_DATASET=<id>] [DS2L_SCENE=<id>] [DS2L_LIVE_ALLOW_POST=1] \
+  npx playwright test -c playwright.live.config.ts tests/live/actual-mini.spec.ts
 ```
 
 live 검증은 job을 만들지 않는다. VESPA job 생성은 실제 GPU 실행이므로 사람이 화면에서 실행한다.
@@ -69,6 +77,15 @@ tests/live/     실제 Spring 대상 검증
 | 메모리 | 카메라 JPG blob URL LRU(참조 중인 이미지 유지, 나머지 48개 초과 시 revoke·다운로드 취소) |
 
 ## 주요 구현 결정
+
+### 연동 개선 (2026-10-05, [개선 기획서](../docs/frontend-integration-plan.md))
+
+- `GET /api/system/status`를 30초마다(숨겨진 탭 제외) 읽어 데이터 출처 배지(테스트 데이터/출처 미확인/nuScenes 원본)와 기능별 준비 상태를 표시한다. VESPA 실행·recording 생성은 `canExecute=true`일 때만 버튼을 연다. CONFIGURED/UNKNOWN은 "실행 환경 확인"(refresh=true, 읽기 전용)으로 다시 확인한다. 상태 API가 없는 이전 서버는 실행을 막고 "출처 정보 없음"으로 표시한다. 검색은 서버가 UNAVAILABLE이라고 할 때만 막는다.
+- job 실패는 서버 `errorCode`로 원인·조치를 안내한다(`lib/errorCodes.ts`). 코드 없는 HTTP 502/504는 중계/상위 서비스 오류로 표시하며 모델 실패로 단정하지 않는다.
+- 요청 snapshot(`lib/jobs/submissions.ts`): instanceId·dataset/checksum·scene·pane·classMode·key·요청 시각·UI generation. 요청은 컴포넌트 밖에서 이어지며, 응답은 snapshot으로 receipt를 남기고 그 pane이 같은 서버·dataset·scene·generation일 때만 화면에 연결한다. pane generation은 다른 씬을 열 때마다 증가한다(A→B→A도 새 값).
+- receipt는 `ds2l.jobReceipts.v2`에 서버 instanceId별로 저장한다. v1 receipt는 서버의 job 문맥(dataset·sceneToken)이 일치할 때만 옮긴다. instanceId가 바뀌면 서버 데이터 캐시와 패널의 job/recording 선택을 비운다.
+- Rerun: 파일 다운로드 실패와 Viewer 시작 실패를 구분하고 "같은 recording 다시 열기"는 이전 fetch·channel·listener·Viewer를 정리한 뒤 같은 파일만 다시 연다(생성 POST 없음). 45초 이상 열리지 않으면 다시 열기를 안내한다. 서버가 `RECORDING_FILE_MISSING`을 주면 recording 상태를 다시 읽어 재생성을 안내한다.
+- GT/예측 토글은 **카메라 라벨 범위**다(그룹 이름·안내 표시). 3D 보기의 표시는 Viewer에서 조절하며, 토글↔3D 연동과 목록→3D 선택 강조는 후속 미완료다.
 
 - 카메라 배치는 channel 이름 기준(FL/F/FR, BL/B/BR). 빈 영역 크기에 따라 3×2/2×3을 자동 선택한다.
 - 프레임은 sample detail, GT, 카메라별 calibration·pose, 6개 JPG decode가 모두 끝나야 화면에 전환한다. 그 전에는 이전 프레임을 유지하고 “불러오는 중”을 표시한다. 늦은 응답은 다른 sample의 묶음이라 표시 프레임에 섞이지 않는다.

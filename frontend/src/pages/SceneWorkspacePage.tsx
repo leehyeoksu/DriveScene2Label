@@ -46,7 +46,10 @@ export default function SceneWorkspacePage() {
   // Store → URL (replace, no history spam). Not while playing or while a frame is still loading.
   useEffect(() => {
     if (pane.playing || frames.buffering || pane.datasetId == null || pane.sceneId == null || !pane.displayedSampleToken) return;
+    const path = window.location.pathname;
     const t = window.setTimeout(() => {
+      // The user may have navigated away meanwhile (route transitions keep this page mounted briefly): never undo that.
+      if (window.location.pathname !== path || path !== `/scenes/${pane.sceneId}`) return;
       const url = workspaceUrl({ datasetId: pane.datasetId!, sceneId: pane.sceneId!, sample: pane.displayedSampleToken, job: pane.jobId, view: params.view });
       const search = url.slice(url.indexOf('?'));
       if (search !== location.search) {

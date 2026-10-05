@@ -11,6 +11,8 @@ nuScenes 기반 **3D Auto-Labeling + 자연어 Scene Retrieval** 백엔드입니
 - [Claude Code 구현 시작 프롬프트](docs/claude-code-frontend-prompt.md)
 - [Rerun recording 계약](docs/rerun-recording.md)
 - [프론트 실행·구조](frontend/README.md)
+- [실제 데이터·프론트 연동 개선 기획서](docs/frontend-integration-plan.md) / [개선 체크리스트](docs/frontend-integration-checklist.md)
+- [작업·recording 운영 복구 절차](docs/operations-recovery.md)
 - [실제 데이터·프론트 연동 개선 기획서](docs/frontend-integration-plan.md)
 - [개선 구현·실제 성공 검증 체크리스트](docs/frontend-integration-checklist.md)
 - [Claude Code 연동 업데이트 프롬프트](docs/claude-code-integration-prompt.md)
@@ -107,6 +109,7 @@ cp .env.example .env
 |NUSCENES_HOST_PATH|필수, 호스트의 dataset root 절대 경로|
 |NUSCENES_VERSION|v1.0-mini; Spring과 VESPA에 동일 적용|
 |NUSCENES_IMPORT_ENABLED|example=true, compose 기본false|
+|NUSCENES_DATA_ORIGIN|UNKNOWN. import checksum과 함께 기록할 출처: 공식 원본이면 `NUSCENES`, 테스트 fixture면 `SYNTHETIC`. 이름·버전으로 추정하지 않으며 SYNTHETIC이면 VESPA 실행을 막는다|
 |APP_PORT / AI_PORT|8080 / 8000, host loopback에만 공개|
 |VESPA_NUM_THREADS|1, VESPA subprocess의 BLAS/OMP 스레드 수. CLIP 설정과 독립|
 |VESPA_TIMEOUT_SECONDS|7200초 subprocess 상한|
@@ -138,7 +141,7 @@ docker compose logs -f ai-server backend
 docker compose -f compose.yml -f compose.gpu.yml up --build -d
 ```
 
-DB healthy 및 AI healthy 후 backend가 기동합니다. CLIP 최초 다운로드 동안 AI health는 아직 응답하지 않으며 backend는 대기합니다. health start period는15분입니다. 모델/네트워크가 준비되지 않으면 이 명령이 모든 기능의 readiness를 보장하지 않습니다. 준비 완료 후에는 컨테이너 재시작으로 모델을 매번 다운로드하지 않습니다.
+DB healthy 후 backend가 기동합니다(2026-10-05부터 AI는 시작만 기다리고 health를 기다리지 않음). CLIP 다운로드·로딩 중에도 씬 목록·카메라·GT는 쓸 수 있고, 검색/VESPA/recording 준비 여부는 `GET /api/system/status`로 확인합니다. CLIP 로딩이 실패해도 AI 서버는 recording/VESPA를 계속 제공하며 `/health`는 503입니다(이전 fail-fast는 `AI_REQUIRE_CLIP=true`). AI health start period는15분입니다. 모델/네트워크가 준비되지 않으면 이 명령이 모든 기능의 readiness를 보장하지 않습니다. 준비 완료 후에는 컨테이너 재시작으로 모델을 매번 다운로드하지 않습니다.
 
 기존 compose의 서비스명 `app`은 `backend`로 바뀌었습니다. 이전 app 컨테이너가 떠 있다면 현재 포트를 비운 뒤 실행하세요. 기존 `postgres_data` volume 이름은 유지하며 자동 삭제하지 않습니다.
 

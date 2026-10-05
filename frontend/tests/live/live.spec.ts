@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-/** Data-agnostic checks against the real Spring API. Records what it saw via test annotations. */
+/** Data-agnostic smoke against the real Spring API: it accepts error/empty outcomes (failure display). Real-data success is actual-mini.spec.ts. */
 test('real Spring: datasets → scene → 6 cameras, GT and job/recording states', async ({ page, request }) => {
   const note = (type: string, description: string) => test.info().annotations.push({ type, description });
   const datasets = await (await request.get('/api/datasets')).json() as Array<{ id: number; name: string; version: string }>;
@@ -31,8 +31,10 @@ test('real Spring: datasets → scene → 6 cameras, GT and job/recording states
 
   // search answers with results, an empty state, or an error state — never a silent mock
   await page.goto(`/scenes?dataset=${ds.id}&q=rainy%20night%20road`);
-  await expect(page.locator('.results-title').first()).not.toContainText('검색 중', { timeout: 45_000 });
-  note('search', (await page.locator('.results-title').first().innerText()).trim());
+  // settled = a result grid or a state box (the loading skeleton grid is aria-hidden)
+  await expect(page.locator('.results .state-box, .results .scene-grid:not([aria-hidden])').first()).toBeVisible({ timeout: 45_000 });
+  note('search', (await page.locator('.results').innerText()).replace(/\s+/g, ' ').slice(0, 160));
+  note('search-readiness', (await page.getByTestId('search-readiness').getAttribute('data-reason').catch(() => null)) ?? 'READY');
 
   const jobId = process.env.DS2L_LIVE_JOB_ID;
   if (jobId) {

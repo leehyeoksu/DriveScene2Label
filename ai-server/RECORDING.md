@@ -39,6 +39,10 @@ VESPA venv는 `--system-site-packages`지만 venv 패키지가 먼저 import됩�
 - instance 순서 = 요청 배열 순서. Spring은 같은 순서로 `gtAnnotationIds`/`predictionIds`를 저장합니다.
 - `application_id=drivescene2label`, `recording_id=ds2l-recording-<recording_id>`, recording 이름=scene_name.
 
+## 준비 상태 (/capabilities, 2026-10-05)
+
+`GET /capabilities`의 recording은 exporter Python에서 `import rerun` 버전(0.38.1)과 `RECORDING_OUTPUT_ROOT` 쓰기 가능 여부를 확인해 READY/UNAVAILABLE(`RECORDING_SDK_UNAVAILABLE`, `RECORDING_SDK_MISMATCH`, `RECORDING_OUTPUT_NOT_WRITABLE`, `RECORDING_NOT_CONFIGURED`)을 돌려준다. 결과는 기본 600초 유지된다. CLIP 로딩 실패는 exporter를 막지 않는다.
+
 ## 입력 검증과 오류
 
 pydantic(extra=forbid)이 finite 값, size>0, 단위 quaternion(±1e-3), index=0..n-1, 고유 sample_token, timestamp 비감소, job_id 없는 예측 금지를 검사합니다. lidar 경로는 절대경로·`..`·`\`·`:`·root 밖 symlink를 거부합니다. exporter도 같은 기하 검증을 반복합니다.

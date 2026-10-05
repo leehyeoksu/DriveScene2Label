@@ -71,6 +71,8 @@ body 생략 또는 `{"jobId": 12}`. 같은 dataset·scene·job·exportVersion의
 
 READY recording의 `.rrd` bytes. `application/octet-stream`, `Content-Length`, `X-Content-Type-Options: nosniff`. Spring의 `Resource` 응답이라 Range 요청도 처리한다. 404 없음/파일 없음, 409 READY 아님.
 
+재열기·유실(2026-10-05): READY content 다운로드 실패와 Viewer 시작 실패는 같은 recordingId로 다시 열며 새 생성·VESPA를 요청하지 않는다. 서버가 파일 부재를 확인하면 404 `RECORDING_FILE_MISSING`과 함께 행을 FAILED로 정정하고, recording root를 읽을 수 없으면 503 `RECORDING_STORAGE_UNAVAILABLE`(유실로 단정하지 않음). 새 recording POST는 재사용 확인 후 recording 준비 상태(`/api/system/status`의 recording)를 서버에서 확인한다.
+
 Viewer 연결(2026-10-04 브라우저 확인): `@rerun-io/web-viewer@0.38.1`의 `start(url)`/`open(url)`은 `.rrd`로 끝나지 않는 HTTP URL을 `Failed to parse URL`로 거부한다. 프론트는 contentUrl을 `fetch`(AbortController로 취소, HTTP 오류 표시)한 bytes를 `WebViewer.open_channel(name).send_rrd(bytes)`로 전달하고, 언마운트 시 채널을 닫고 `stop()`한다. Viewer는 `start()`가 받은 요소에 인라인 `position: relative`를 넣으므로 절대 배치 래퍼 안의 100% 크기 요소에 붙인다.
 
 ## 4. 내부 FastAPI 계약 (Spring → AI)
