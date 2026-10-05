@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(properties={"auto-label.worker.enabled=false","auto-label.dataset-version=v1.0-mini",
+@SpringBootTest(properties={"auto-label.worker.enabled=false","recording.worker.enabled=false","auto-label.dataset-version=v1.0-mini",
  "spring.datasource.url=${TEST_DB_URL:jdbc:postgresql://localhost:55432/drivescene_test}",
  "spring.datasource.username=${TEST_DB_USERNAME:drivescene}","spring.datasource.password=${TEST_DB_PASSWORD:}","nuscenes.import.enabled=false"})
 @AutoConfigureMockMvc
@@ -73,9 +73,16 @@ class AutoLabelTests {
  @Test void pendingThenHttpResultCompletedAndEmptySample() throws Exception {
   long gt=jdbc.sql("SELECT count(*) FROM gt_annotation").query(Long.class).single();
   long job=create("success"); assertThat(jobs.status(job).status()).isEqualTo("PENDING");
+  long scene=jdbc.sql("SELECT id FROM scene WHERE dataset_id=:d AND token='scene-token'").param("d",dataset).query(Long.class).single();
+  mvc.perform(get("/api/auto-label/jobs/{id}",job)).andExpect(status().isOk()).andExpect(jsonPath("$.jobId").value(job)).andExpect(jsonPath("$.datasetId").value(dataset))
+   .andExpect(jsonPath("$.status").value("PENDING")).andExpect(jsonPath("$.errorMessage").isEmpty()).andExpect(jsonPath("$.createdAt").isNotEmpty())
+   .andExpect(jsonPath("$.startedAt").isEmpty()).andExpect(jsonPath("$.completedAt").isEmpty())
+   .andExpect(jsonPath("$.sceneToken").value("scene-token")).andExpect(jsonPath("$.sceneId").value(scene)).andExpect(jsonPath("$.sceneName").value("scene-0061"))
+   .andExpect(jsonPath("$.classMode").value(8)).andExpect(jsonPath("$.mappingName").value("8class"));
   mvc.perform(get("/api/auto-label/jobs/{id}/results",job)).andExpect(status().isConflict());
   new AutoLabelWorker(jobs,client).runNextJob();
-  mvc.perform(get("/api/auto-label/jobs/{id}",job)).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("COMPLETED"));
+  mvc.perform(get("/api/auto-label/jobs/{id}",job)).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("COMPLETED"))
+   .andExpect(jsonPath("$.completedAt").isNotEmpty()).andExpect(jsonPath("$.sceneToken").value("scene-token")).andExpect(jsonPath("$.sceneId").value(scene)).andExpect(jsonPath("$.classMode").value(8));
   mvc.perform(get("/api/auto-label/jobs/{id}/results",job)).andExpect(status().isOk())
    .andExpect(jsonPath("$.boxes.length()").value(2)).andExpect(jsonPath("$.sampleTokens.length()").value(2))
    .andExpect(jsonPath("$.coordinateFrame").value("WORLD")).andExpect(jsonPath("$.artifacts.length()").value(1));

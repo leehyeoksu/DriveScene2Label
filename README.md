@@ -9,14 +9,19 @@ nuScenes 기반 **3D Auto-Labeling + 자연어 Scene Retrieval** 백엔드입니
 - [프론트엔드 개발 기획서](docs/frontend-product-plan.md)
 - [프론트 구현 체크리스트](docs/frontend-implementation-checklist.md)
 - [Claude Code 구현 시작 프롬프트](docs/claude-code-frontend-prompt.md)
+- [Rerun recording 계약](docs/rerun-recording.md)
+- [프론트 실행·구조](frontend/README.md)
+- [실제 데이터·프론트 연동 개선 기획서](docs/frontend-integration-plan.md)
+- [개선 구현·실제 성공 검증 체크리스트](docs/frontend-integration-checklist.md)
+- [Claude Code 연동 업데이트 프롬프트](docs/claude-code-integration-prompt.md)
 
-프론트 개발 기준 문서와 수정 시안은 `docs/frontend-design/`에 준비되어 있습니다. 저장소 개발 지침은 [CLAUDE.md](CLAUDE.md)를 참고하세요. 현재 이 준비 작업에서 React 앱과 GT/Rerun 확장을 구현하거나 검증한 것은 아닙니다. 기존 백엔드 위에 `frontend/`를 추가하고 필요한 확장을 함께 진행합니다.
+React 프론트는 [`frontend/`](frontend/README.md)에 있습니다(씬 탐색·검색, 6카메라 작업대, 이미지 위 GT/예측 투영, VESPA 작업, 두 씬 비교, Rerun 3D). 디자인 기준은 `docs/frontend-design/`, 저장소 개발 지침은 [CLAUDE.md](CLAUDE.md), 진행·검증 상태는 [구현 체크리스트](docs/frontend-implementation-checklist.md)를 따릅니다. 실제 nuScenes mini·GPU 환경에서의 통합 확인 범위는 체크리스트의 검증 기록에 따로 적습니다.
 
 ## 1. Architecture
 
 ```mermaid
 flowchart TD
- F[Frontend - 별도 프로젝트] --> C[Spring REST Controller]
+ F[React frontend - frontend/] --> C[Spring REST Controller]
  C --> S[Spring Service / Job Worker]
  S --> R[Repository]
  R --> DB[(PostgreSQL 16 + pgvector)]
@@ -108,8 +113,11 @@ cp .env.example .env
 |AI_SERVER_READ_TIMEOUT|30s, CPU CLIP 처리에 더 필요한 경우 조정|
 |AUTO_LABEL_READ_TIMEOUT|7300s, VESPA timeout보다 길게|
 |AUTO_LABEL_WORKER_ENABLED|true, Spring DB polling worker|
+|RECORDING_TIMEOUT_SECONDS|600초, Rerun exporter subprocess 상한(ai-server)|
+|RECORDING_READ_TIMEOUT|660s, Spring의 `POST /recordings` 대기. exporter 상한 이상으로|
+|RECORDING_WORKER_ENABLED|true, Spring recording worker|
 
-컨테이너 내부 고정 경로/주소: Spring DB_URL=`jdbc:postgresql://db:5432/<db>`, AI_SERVER_BASE_URL=`http://ai-server:8000`, NUSCENES_ROOT=`/data/nuscenes`, VESPA_ROOT=`/opt/vespa`, VESPA_OUTPUT_ROOT=`/results`, HF_HOME=`/models/huggingface`, TORCH_HOME=`/models/torch`. 호스트 localhost를 컨테이너 간 주소로 사용하지 않습니다.
+컨테이너 내부 고정 경로/주소: Spring DB_URL=`jdbc:postgresql://db:5432/<db>`, AI_SERVER_BASE_URL=`http://ai-server:8000`, NUSCENES_ROOT=`/data/nuscenes`, VESPA_ROOT=`/opt/vespa`, VESPA_OUTPUT_ROOT=`/results`, RECORDING_OUTPUT_ROOT(ai-server)/RECORDING_ROOT(backend)=`/recordings`, HF_HOME=`/models/huggingface`, TORCH_HOME=`/models/torch`. 호스트 localhost를 컨테이너 간 주소로 사용하지 않습니다.
 
 ## 7. Quick Start
 
@@ -146,6 +154,7 @@ DB healthy 및 AI healthy 후 backend가 기동합니다. CLIP 최초 다운로�
 |postgres_data|db|PostgreSQL persistent data|
 |model_cache → /models|ai-server|CLIP/Hugging Face/torch hub caches|
 |vespa_results → /results|ai-server|run별 최종 JSON, 로그, intermediate NPZ|
+|rerun_recordings → /recordings|ai-server(rw), backend(ro)|recording별 `.rrd`, 요청 JSON, exporter 로그|
 |dataset bind → /data/nuscenes:ro|backend, ai-server|동일 원본 센서/metadata 파일|
 
 Spring은 최종 결과를 HTTP JSON으로 받으므로 `/results`를 공유하지 않습니다. DB에는 artifact storageKey/relativePath만 저장합니다. artifact download API는 아직 없습니다.
@@ -164,6 +173,8 @@ AI health의 `vespa=configured`는 파일 경로 점검이며 모델 다운로�
 자연어 검색: camera image → Spring → FastAPI CLIP image → 768-d L2 vector → image_embedding. text → Spring → CLIP text → pgvector cosine distance `<=>` → scene별 TOP_K_AVERAGE → Scene 목록.
 
 Auto-label: scene 선택 → Spring job PENDING → worker RUNNING → FastAPI subprocess → VESPA final JSON → Spring 검증 → predicted_annotation + artifact + job COMPLETED atomic commit. 저장 오류는 rollback 후 FAILED. 프론트엔드는 job REST polling을 사용합니다.
+
+Rerun recording: Spring이 keyframe sample·LIDAR_TOP pose/calibration·GT·(선택) 완료 job 예측을 FastAPI `POST /recordings`로 보냄 → exporter subprocess(rerun-sdk 0.38.1)가 `/recordings/<id>-<token>/<scene>.rrd` 생성 → Spring 검증 후 READY, 브라우저는 Spring content API로 받아 Web Viewer 0.38.1에 연다. recording 실패는 VESPA job을 다시 실행하지 않는다. 계약은 [Rerun recording](docs/rerun-recording.md), exporter는 [RECORDING.md](ai-server/RECORDING.md).
 
 ## 10. API
 
@@ -192,6 +203,16 @@ auto_label_job → auto_label_job_sample → predicted_annotation
 Flyway V1 catalog, V2 pgvector, V3 scene flags, V4 auto-label을 startup 시 적용합니다. 이미 배포된 migration을 수정하지 말고 새 migration을 추가하세요. GT와 pseudo-label 모두 world 좌표, sizeWLH, quaternionWXYZ. VESPA score1.0은 고정값입니다.
 
 ## 12. Development / Tests
+
+프론트 (Node 20.19+ / npm, 상세는 [frontend/README.md](frontend/README.md)):
+
+```bash
+cd frontend && npm ci
+API_PROXY_TARGET=http://127.0.0.1:8080 npm run dev   # /api 를 Spring으로 proxy
+npm run typecheck && npm test && npm run build
+npm run test:e2e                                       # route fixture 기반 UI 흐름 (실제 서버 연동 아님)
+DS2L_API=http://127.0.0.1:8080 npx playwright test -c playwright.live.config.ts   # 실행 중인 Spring 대상
+```
 
 Spring 단독 (JDK21):
 
@@ -247,9 +268,9 @@ python3 scripts/docker-smoke.py --auto-label
 docker compose down
 ```
 
-컨테이너/network만 제거하며 DB/model cache/results는 유지됩니다. GPU 실행 시 동일한 `-f compose.yml -f compose.gpu.yml` 조합을 사용합니다.
+컨테이너/network만 제거하며 DB/model cache/results/recordings는 유지됩니다. GPU 실행 시 동일한 `-f compose.yml -f compose.gpu.yml` 조합을 사용합니다.
 
-**아래 명령은 DB 데이터·모델 캐시·VESPA 결과 볼륨까지 삭제합니다. 백업 없이 실행하지 마세요.** dataset bind의 원본 파일은 삭제하지 않습니다.
+**아래 명령은 DB 데이터·모델 캐시·VESPA 결과·Rerun recording 볼륨까지 삭제합니다. 백업 없이 실행하지 마세요.** dataset bind의 원본 파일은 삭제하지 않습니다.
 
 ```bash
 docker compose down -v

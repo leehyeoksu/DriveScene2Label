@@ -1,5 +1,9 @@
 # Claude Code 프론트 구현 시작 프롬프트
 
+> 이 문서는 최초 구현용 프롬프트다. 2026-10-05 이후 실제 데이터·연동 개선 작업은 [개선 기획서](frontend-integration-plan.md)와 [개선 체크리스트](frontend-integration-checklist.md)를 기준으로 이어간다. 이미 구현된 frontend/와 recording을 새로 생성하지 않으며, 아래 과거 API 설명은 현재 코드·REST 계약과 대조한다.
+
+후속 업데이트를 요청할 때는 [업데이트 전용 시작·재개 프롬프트](claude-code-integration-prompt.md)를 사용한다.
+
 DriveScene2Label 저장소에서 Claude Code를 시작하고, 아래 코드 블록 전체를 첫 메시지로 전달한다. 문서는 `codex/frontend-implementation` 브랜치에 준비되어 있다. 이전 실행 결과가 있다면 체크리스트와 실제 코드를 기준으로 이어서 작업한다.
 
 ```text

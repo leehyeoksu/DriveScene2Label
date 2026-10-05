@@ -3,15 +3,17 @@ import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from routers import auto_label, embedding
+from routers import auto_label, embedding, recording
 from services.clip_service import ClipService, ClipError
 from services.vespa_service import VespaService, VespaError
+from services.recording_service import RecordingService, RecordingError
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     service = ClipService()
     app.state.clip_service = service
     app.state.vespa_service = VespaService()
+    app.state.recording_service = RecordingService()
     try:
         service.load()  # Fail startup if weights/dependencies cannot load; never pretend ready.
         yield
@@ -35,6 +37,7 @@ async def request_logging(request: Request, call_next):
 
 app.include_router(embedding.router)
 app.include_router(auto_label.router)
+app.include_router(recording.router)
 
 @app.exception_handler(ClipError)
 async def clip_error_handler(request: Request, exc: ClipError):
@@ -42,6 +45,7 @@ async def clip_error_handler(request: Request, exc: ClipError):
     return JSONResponse(status_code=exc.status_code, content={"detail": {"code": exc.code, "message": str(exc)}})
 
 @app.exception_handler(VespaError)
+@app.exception_handler(RecordingError)
 async def vespa_error_handler(request, exc):
     logging.getLogger("uvicorn.error").warning("AI error path=%s code=%s", request.url.path, exc.code)
     return JSONResponse(status_code=exc.status_code, content={"detail": {"code": exc.code, "message": str(exc)}})
@@ -50,4 +54,4 @@ async def vespa_error_handler(request, exc):
 def health(request: Request):
     service = request.app.state.clip_service
     ready = service.model is not None
-    return JSONResponse(status_code=200 if ready else 503, content={"status": "ok" if ready else "not_ready", "service": "drivescene-ai", "inference": {"clip": "ready" if ready else "not_ready", "vespa": "configured" if request.app.state.vespa_service.configured() else "not_configured"}, "device": service.device})
+    return JSONResponse(status_code=200 if ready else 503, content={"status": "ok" if ready else "not_ready", "service": "drivescene-ai", "inference": {"clip": "ready" if ready else "not_ready", "vespa": "configured" if request.app.state.vespa_service.configured() else "not_configured", "recording": "configured" if request.app.state.recording_service.configured() else "not_configured"}, "device": service.device})

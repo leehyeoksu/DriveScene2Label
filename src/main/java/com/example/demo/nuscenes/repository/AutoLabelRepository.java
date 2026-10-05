@@ -61,5 +61,11 @@ public class AutoLabelRepository {
   var artifacts=jdbc.sql("SELECT id,artifact_type,storage_key,relative_path,checksum,content_type FROM auto_label_artifact WHERE job_id=:j ORDER BY id").param("j",id).query(Artifact.class).list();
   return new Results(id,status.datasetId(),header.mappingName(),header.coordinateFrame(),header.scoreType(),samples(id).stream().sorted().toList(),boxes,artifacts);
  }
- public Optional<JobStatus> status(long id) { return jdbc.sql("SELECT id AS job_id,dataset_id,status,failure_reason AS error_message,created_at,started_at,completed_at FROM auto_label_job WHERE id=:j").param("j",id).query(JobStatus.class).optional(); }
+ public Optional<JobStatus> status(long id) {
+  return jdbc.sql("""
+   SELECT j.id AS job_id,j.dataset_id,j.status,j.failure_reason AS error_message,j.created_at,j.started_at,j.completed_at,
+    j.requested_targets->>0 AS scene_token,s.id AS scene_id,s.name AS scene_name,CAST(replace(j.mapping_name,'class','') AS integer) AS class_mode,j.mapping_name
+   FROM auto_label_job j LEFT JOIN scene s ON s.dataset_id=j.dataset_id AND s.token=j.requested_targets->>0 WHERE j.id=:j
+   """).param("j",id).query(JobStatus.class).optional();
+ }
 }

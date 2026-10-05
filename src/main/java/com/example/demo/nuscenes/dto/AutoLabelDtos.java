@@ -7,7 +7,9 @@ public final class AutoLabelDtos {
  private AutoLabelDtos() {}
  public record CreateRequest(@NotBlank String sceneToken, Long datasetId, @NotNull Integer classMode) {}
  public record Created(long jobId,String status) {}
- public record JobStatus(long jobId,long datasetId,String status,String errorMessage,OffsetDateTime createdAt,OffsetDateTime startedAt,OffsetDateTime completedAt) {}
+ /** sceneToken is requested_targets[0]; sceneId/sceneName are null if that scene row no longer resolves. classMode is parsed from mappingName. */
+ public record JobStatus(long jobId,long datasetId,String status,String errorMessage,OffsetDateTime createdAt,OffsetDateTime startedAt,OffsetDateTime completedAt,
+   String sceneToken,Long sceneId,String sceneName,int classMode,String mappingName) {}
  public record Results(long jobId,long datasetId,String mappingName,String coordinateFrame,String scoreType,List<String> sampleTokens,List<Prediction> boxes,List<Artifact> artifacts) {}
  public record Prediction(long id,String sampleToken,int boxIndex,String detectionName,double centerX,double centerY,double centerZ,double sizeW,double sizeL,double sizeH,double rotationW,double rotationX,double rotationY,double rotationZ,double velocityX,double velocityY,double detectionScore,String attributeName) {}
  public record Artifact(long id,String artifactType,String storageKey,String relativePath,String checksum,String contentType) {}

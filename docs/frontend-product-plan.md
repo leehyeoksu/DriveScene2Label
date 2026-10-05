@@ -1,8 +1,10 @@
 # DriveScene2Label 프론트엔드 개발 기획서
 
+> 2026-10-05 후속 기준: [실제 데이터·연동 개선 기획서](frontend-integration-plan.md)와 [개선 체크리스트](frontend-integration-checklist.md)를 함께 따른다. 이 문서의 제품·화면·디자인 요구는 유지하며, 개선 범위의 환경·준비 상태·오류·비동기 처리·실제 성공 판정은 후속 기획서가 보완한다. 기존 v1.2 구현 기록을 실제 데이터 연동 완료로 취급하지 않는다.
+
 | 항목 | 내용 |
 |---|---|
-| 문서 버전 | v1.1 · 수정 시안 기반 개발 기준 |
+| 문서 버전 | v1.2 · 구현 반영(2026-10-04) |
 | 작성일 | 2026-10-04 |
 | 대상 | 프론트 개발자, 백엔드·AI 담당자, 시안 제작자, 검토자 |
 | 기준 소스 | 저장소 main `88847a9` |
@@ -36,7 +38,7 @@
 | 서버 상태 | TanStack Query | 실제 API 조회, 캐시, polling, 재시도 |
 | 화면 상태 | Zustand | 패널별 프레임·재생·레이어·객체·배치 |
 | UI | Tailwind CSS + shadcn/ui | 기준 시안의 토큰과 스타일을 적용 |
-| 3D | Rerun Web Viewer | Python SDK와 호환되는 버전을 기술 검증 후 고정 |
+| 3D | Rerun Web Viewer | Python SDK·웹 Viewer 0.38.1로 고정(기술 검증 결과, 9장) |
 | API 타입 | 수동 DTO + mapper, 이후 Spring OpenAPI 생성 타입 | mock 형식을 서버 계약으로 사용하지 않음 |
 | 검증 | Vitest + Playwright | 기하·상태 경계와 실제 사용자 흐름 |
 | 후속 차트 | Apache ECharts | 평가 API 구현 시 도입 |
@@ -238,7 +240,7 @@ A/B를 누르면 우측 작업·객체 패널도 해당 패널을 따른다. 같
 | FR-23 | 실패·재실행 | FAILED 이유 표시. 사용자 새 실행은 새 key로 새 job 생성 |
 | FR-24 | 복원 | URL과 로컬 receipt의 jobId로 다시 조회. 저장된 상태 문자열을 서버 사실로 사용하지 않음 |
 
-classMode는 1/3/8이다. 1종은 vehicle, 3종은 vehicle/pedestrian/bicycle, 8종은 car/truck/bus/trailer/construction_vehicle/pedestrian/motorcycle/bicycle이다.
+classMode는 1/3/8이다. 1종은 vehicle, 3종은 vehicle/pedestrian/bicycle, 8종은 car/truck/bus/trailer/construction_vehicle/pedestrian/motorcycle/bicycle이다. GT 비교 분류는 VESPA upstream `assets/class_mapping/{1,3,8}class.yaml`(commit acb2b6e)의 `mapping_nuscenes`를 그대로 따른다. upstream 기준으로 3종에서 motorcycle은 bicycle, 1종에서는 pedestrian도 vehicle이며, barrier·trafficcone·emergency 등은 비교 분류가 없다(`frontend/src/lib/classes.ts`).
 
 상태의 표시 문구는 다음으로 통일한다.
 
@@ -319,7 +321,7 @@ interface BoxView {
 | dataset·scene | `/api/datasets`, `/api/datasets/{id}/scenes` | 숫자 ID로 조회 |
 | sample 목록 | `/api/scenes/{id}/samples` | limit 1~500, offset≥0. 순서와 pagination 유지 |
 | 센서 파일 | `/api/samples/{id}` | 기본 keyframesOnly=true. contentUrl은 Spring 상대 URL |
-| GT | `/api/samples/{id}/annotations` | 현재 class 이름 없음 |
+| GT | `/api/samples/{id}/annotations` | 원본 categoryToken/categoryName 포함(v1.2 추가, nullable) |
 | 카메라 투영 | `/api/sensor-files/{id}/calibration`, `/pose` | 각 카메라 파일의 pose 사용 |
 | 이미지/점군 파일 | `/api/sensor-files/{id}/content` | LiDAR/Radar는 binary. Rerun recording URL이 아님 |
 | 검색 | `/api/search/scenes` | query를 안전하게 인코딩. 빈 결과 정상 |
@@ -336,7 +338,7 @@ interface BoxView {
 | GT·pose·calibration | 평탄한 center/translation/rotation/intrinsic 필드 | mapper에서 벡터·행렬로 변환 |
 | search | `scenes[]`, `sceneName`, `bestSampleToken` | 결과 목록과 대표 프레임으로 변환 |
 | create job | `{jobId,status}` | 생성 요청 정보를 receipt에 함께 저장 |
-| job status | `completedAt`, datasetId. sceneToken/classMode 없음 | receipt 또는 추가 문맥 계약 활용 |
+| job status | `completedAt`, datasetId, v1.2부터 sceneToken/sceneId/sceneName/classMode/mappingName 추가 | 서버 문맥 → receipt → 결과 sampleTokens 순으로 소속 검증 |
 | job results | `boxes[]`, `detectionName`, 최상위 datasetId | dataset+sampleToken으로 연결 |
 | SensorFile | `width`, `height`, `contentUrl` 제공 | 실제 원본 비율로 표시·투영 |
 
@@ -392,7 +394,7 @@ image와 overlay는 원본 width/height를 같은 기준으로 사용한다. SVG
 
 ## 9. Rerun 연결 설계
 
-현재 AI 코드에는 `rerun-sdk==0.21.0`이 있지만 실행 wrapper는 `visualize=False`다. 설치되어 있다는 사실과 브라우저에서 볼 recording이 있다는 사실은 별개다.
+VESPA 환경에는 `rerun-sdk==0.21.0`이 있지만 실행 wrapper는 `visualize=False`다. v1.2 기술 검증에서 `@rerun-io/web-viewer@0.21.0`은 `ready`/`fullscreen` 이벤트만 있고 시간 읽기·설정과 선택 이벤트가 없음을 확인했다. 그래서 recording exporter는 AI 기본 환경의 `rerun-sdk==0.38.1`, 웹은 `@rerun-io/web-viewer@0.38.1`로 함께 고정했다(VESPA venv의 0.21.0은 유지). 0.38.1은 `time_update`, `selection_change`(entity_path + instance_id), `set_current_time` 등을 제공한다. 실제 계약·검증은 [Rerun recording 계약](rerun-recording.md)과 체크리스트를 따른다.
 
 웹 뷰어는 호환되는 recording 또는 지원되는 스트림이 필요하고 Python SDK·웹 패키지 버전을 맞춰야 한다. React 패키지 연결과 선택 이벤트는 공식 문서를 참고하되, 프로젝트에서 고정할 버전의 API를 따로 확인한다. [Rerun 웹 임베딩 문서](https://rerun.io/docs/howto/integrations/embed-web)
 
@@ -406,7 +408,7 @@ image와 overlay는 원본 width/height를 같은 기준으로 사용한다. SVG
 
 선택 API가 entity 단위만 제공한다면 박스 인스턴스별 식별 전략을 별도로 마련한다. 목록의 annotation ID가 모든 프레임의 같은 객체 ID라고 가정하지 않는다. 필요한 기능을 목표 버전에서 지원하지 않으면 SDK/웹 버전의 동시 변경 또는 MVP 상호작용 범위 변경을 명시적으로 결정한다.
 
-### recording 데이터 계약 — 제안, 미구현
+### recording 데이터 계약 — v1.2 구현됨
 
 recording은 별도 exporter가 원본 점군·GT·필요한 job의 예측을 묶어 생성하는 방식을 우선 검토한다. `visualize=True`만 바꾸는 것으로 웹 파일 생성·제공이 완료된다고 보지 않는다. SDK 호환성과 실제 데이터 검증을 통과한 경로를 선택한다.
 
@@ -417,7 +419,7 @@ recording은 별도 exporter가 원본 점군·GT·필요한 job의 예측을 �
 - 원본 센서·GT만 있는 recording과 특정 job 예측을 포함한 recording의 준비 여부를 구분한다.
 - 파일 URL·SDK 버전·좌표계·범위·준비 상태·생성 실패 이유를 조회할 수 있게 한다.
 
-### recording API 초안 — 팀 계약 검토 후 구현
+### recording API — v1.2 구현됨 ([계약](rerun-recording.md))
 
 | 호출 | 제안 동작 |
 |---|---|
@@ -427,9 +429,9 @@ recording은 별도 exporter가 원본 점군·GT·필요한 job의 예측을 �
 
 새 계약의 준비 상태는 `PENDING/RUNNING/READY/FAILED`로 제안하고 라벨 job enum과 분리한다. metadata에는 최소한 datasetId, sceneId, sceneToken, 선택적 jobId, sdkVersion, coordinateFrame, timeline 이름·단위, sampleToken별 timeline 값이 필요하다. 박스 선택 연동용 entity/box mapping도 함께 정의한다. timeline이 sample index를 사용하더라도 외부 sampleToken 대응표를 제공한다.
 
-jobId가 있으면 씬 소속과 COMPLETED를 서버에서 검증한다. 같은 원본·job·export 설정의 recording은 재사용하고, 생성 실패 재시도는 recording만 다시 생성한다. recording 오류로 VESPA를 다시 실행하지 않는다. 위 경로·필드·생성 정책은 현재 API가 아닌 구현 전 검토 초안이다.
+jobId가 있으면 씬 소속과 COMPLETED를 서버에서 검증한다. 같은 원본·job·export 설정의 recording은 재사용하고, 생성 실패 재시도는 recording만 다시 생성한다. recording 오류로 VESPA를 다시 실행하지 않는다. v1.2에서 위 경로로 구현했고 `GET /api/scenes/{sceneId}/recordings` 목록을 추가했다. 0.38.1 Viewer는 `.rrd`로 끝나지 않는 HTTP URL을 열지 않으므로 프론트는 content를 fetch해 log channel로 전달한다.
 
-Spring은 현재 AI `/results` 볼륨을 공유하지 않는다. recording 저장소 접근 또는 별도 파일 서비스·프록시 경로를 정해야 한다. artifact metadata의 relativePath를 브라우저 파일 URL로 직접 연결하지 않는다. `COMPLETED`인 라벨 job과 recording 생성 완료는 별개일 수 있다.
+Spring은 AI `/results` 볼륨을 공유하지 않는다. recording은 별도 `rerun_recordings` volume(AI 쓰기, Spring 읽기 전용)에 저장하고 Spring content API로만 제공한다. artifact metadata의 relativePath를 브라우저 파일 URL로 직접 연결하지 않는다. `COMPLETED`인 라벨 job과 recording 생성 완료는 별개일 수 있다.
 
 React 공통 타임라인을 프레임 상태의 기준으로 사용한다. Rerun에서 시간을 이동할 경우 해당 sample에 매핑하고, 출처와 변경 여부를 확인해 React↔Viewer 이벤트 반복을 막는다. 원하는 프레임 데이터가 아직 로딩 중이면 동기화 완료로 표시하지 않는다.
 
@@ -617,3 +619,4 @@ Vitest는 좌표 변환·투영·시간 mapping·정상/오류 응답 변환처�
 |---|---|
 | v1.0 | 기존 API·화면 요구 기반 개발 초안 |
 | v1.1 | 수정 시안 인수, 기존 스택 명시, 동일 씬 비교, DTO 차이·결과 재조회, GT/Rerun 필수 범위와 recording 계약 초안, 첫 구현 묶음·QA 추가 |
+| v1.2 | 구현 반영: GT category·job 문맥 필드, Rerun 0.38.1 고정과 recording API/exporter, VESPA class mapping 근거, Viewer 로딩 방식. 진행·검증은 체크리스트 |

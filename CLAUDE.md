@@ -4,6 +4,10 @@
 
 ## 먼저 읽을 문서
 
+현재 실제 데이터·프론트 연동 개선 작업의 시작 기준은 [개선 기획서](docs/frontend-integration-plan.md)와 [개선 구현 체크리스트](docs/frontend-integration-checklist.md)다. [근거 분석](docs/frontend-integration-review.md)에서 확인한 문제·미검증 범위를 함께 읽는다. 기존 M1~M6 기록은 아래 문서에 유지하고, 이번 개선 범위의 계약·진행 순서는 개선 기획서를 우선한다. 현재 사용자 요청이 기획 정립이면 구현에 착수하지 않는다.
+
+실제 업데이트를 시작하거나 중단 후 이어갈 때는 [Claude Code 업데이트·재개 프롬프트](docs/claude-code-integration-prompt.md)를 사용한다. 프롬프트 작성 요청 자체는 프로그램 구현 착수와 구분한다.
+
 1. [프론트 개발 기획서](docs/frontend-product-plan.md): 화면·기능·상태·개발 범위.
 2. [구현 체크리스트](docs/frontend-implementation-checklist.md): 진행 상태·완료 조건·검증 기록.
 3. [실제 REST 계약](README_API.md): 기존 Spring 요청/응답·오류.
@@ -36,7 +40,7 @@
 - job 생성은 씬 전체이며 classMode=1/3/8, 상태는 PENDING/RUNNING/COMPLETED/FAILED다. terminal에서 polling을 멈춘다.
 - 같은 실행의 네트워크 재시도는 동일 Idempotency-Key를 사용한다. 사용자가 새 작업을 실행하면 새 key를 사용한다.
 - status GET 오류는 job FAILED가 아니다. 완료 결과 GET 재시도는 새 VESPA 작업을 만들지 않는다.
-- 현재 job status에는 sceneToken/classMode가 없다. 생성 receipt를 저장하며, 완료 시간은 `completedAt`을 읽는다.
+- 현재 작업 트리의 job status에는 sceneToken/sceneId/sceneName/classMode/mappingName이 추가되어 있다. 이전 서버에서는 없을 수 있으므로 receipt를 보존하고 서버 문맥과 대조하며, 완료 시간은 `completedAt`을 읽는다.
 - A/B는 같은 씬을 열어도 UI 상태가 독립이어야 한다. 서버 캐시는 공유하되 프레임·재생·선택·레이어·job 선택은 패널별로 둔다.
 - `artifact.relativePath`는 다운로드 URL이 아니다. recording의 생성/준비 상태와 라벨 job 상태를 구분한다.
 

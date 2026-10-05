@@ -2,6 +2,8 @@
 
 Spring은 DB 저장/검색과 job을 관리합니다. AI 서버는 CLIP 벡터와 VESPA 예측 JSON을 생성하며 DB에는 접근하지 않습니다. VESPA는 subprocess wrapper로 연결되며 별도 VESPA 환경/데이터 설정이 필요합니다. [VESPA 실행 안내](VESPA.md)를 참고하세요.
 
+Rerun `.rrd` recording은 `POST /recordings`가 별도 subprocess exporter(rerun-sdk 0.38.1)로 생성합니다. [Recording exporter](RECORDING.md)를 참고하세요.
+
 routers=Controller, services=계산 Service, schemas=Request/Response DTO입니다. CLIP 계산은 기존 embedding/embed_images.py에서 embedding/clip_core.py로 추출했으며 기존 CLI와 FastAPI가 함께 재사용합니다. CLI의 DB 저장/검색 코드는 그대로 유지하고 AI 서버는 해당 CLI나 DB driver를 import하지 않습니다. repo 전체를 유지해야 공유 모듈 import가 됩니다.
 
 Docker 전체 실행은 [프로젝트 README](../README.md)를 우선 참고하세요. 컨테이너에는 VESPA 별도 Python 환경이 포함됩니다.
