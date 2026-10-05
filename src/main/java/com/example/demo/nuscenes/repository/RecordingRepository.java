@@ -9,7 +9,7 @@ public class RecordingRepository {
  public record Content(String status,String relativePath) {}
  private static final String VIEW="""
   SELECT r.id AS recording_id,r.dataset_id,s.id AS scene_id,r.scene_token,s.name AS scene_name,r.job_id,r.status,r.sdk_version,r.export_version,
-   CAST(r.metadata AS text) AS metadata,r.size_bytes,r.failure_reason,r.created_at,r.started_at,r.completed_at
+   CAST(r.metadata AS text) AS metadata,r.size_bytes,r.failure_reason,r.error_code,r.created_at,r.started_at,r.completed_at
   FROM scene_recording r JOIN scene s ON s.dataset_id=r.dataset_id AND s.token=r.scene_token
   """;
  private final JdbcClient jdbc;
@@ -72,8 +72,15 @@ public class RecordingRepository {
    WHERE id=:id AND status='RUNNING' AND execution_token=:t
    """).param("p",path).param("z",size).param("c",checksum).param("v",sdkVersion).param("m",metadata).param("id",w.id()).param("t",w.executionToken()).update();
  }
- public int fail(Work w,String reason) {
-  return jdbc.sql("UPDATE scene_recording SET status='FAILED',completed_at=now(),failure_reason=:r WHERE id=:id AND status='RUNNING' AND execution_token=:t")
-   .param("r",reason).param("id",w.id()).param("t",w.executionToken()).update();
+ public int fail(Work w,String code,String reason) {
+  return jdbc.sql("UPDATE scene_recording SET status='FAILED',completed_at=now(),failure_reason=:r,error_code=:c WHERE id=:id AND status='RUNNING' AND execution_token=:t")
+   .param("r",reason).param("c",code).param("id",w.id()).param("t",w.executionToken()).update();
+ }
+ /** Conditional: only the same READY row/path. Clears READY-only columns as the FAILED state requires. */
+ public int markFileMissing(long id,String path) {
+  return jdbc.sql("""
+   UPDATE scene_recording SET status='FAILED',completed_at=now(),failure_reason='Recording file missing on server',error_code='RECORDING_FILE_MISSING',
+    relative_path=NULL,size_bytes=NULL,checksum=NULL,metadata=NULL WHERE id=:id AND status='READY' AND relative_path=:p
+   """).param("id",id).param("p",path).update();
  }
 }

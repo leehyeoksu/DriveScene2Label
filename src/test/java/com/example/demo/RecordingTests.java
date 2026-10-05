@@ -23,7 +23,7 @@ import static org.hamcrest.Matchers.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(properties={"auto-label.worker.enabled=false","recording.worker.enabled=false",
+@SpringBootTest(properties={"auto-label.worker.enabled=false","system-status.check-workers=false","recording.worker.enabled=false",
  "spring.datasource.url=${TEST_DB_URL:jdbc:postgresql://localhost:55432/drivescene_test}",
  "spring.datasource.username=${TEST_DB_USERNAME:drivescene}","spring.datasource.password=${TEST_DB_PASSWORD:}","nuscenes.import.enabled=false"})
 @AutoConfigureMockMvc
@@ -53,10 +53,10 @@ class RecordingTests {
     var samples=body.putArray("samples");
     for(JsonNode s:input.path("samples")) samples.addObject().put("index",s.path("index").asInt()).put("sample_token",s.path("sample_token").asText())
      .put("lidar_points",s.path("lidar").isNull()?0:34688).put("gt_boxes",s.path("gt").size()+(mode.equals("count")?1:0)).put("prediction_boxes",s.path("predictions").size());
-    byte[] bytes=(mode.equals("fail")?"{\"detail\":{\"code\":\"EXPORTER_FAILED\",\"message\":\"exporter crashed\"}}":JSON.writeValueAsString(body)).getBytes(StandardCharsets.UTF_8);
+    byte[] bytes=(mode.equals("fail")?"{\"detail\":{\"code\":\"RECORDING_EXPORT_FAILED\",\"message\":\"exporter crashed\"}}":JSON.writeValueAsString(body)).getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type","application/json"); exchange.sendResponseHeaders(mode.equals("fail")?502:200,bytes.length);
     try(var output=exchange.getResponseBody()) { output.write(bytes); }
-   }); server.start(); return server;
+   }); FakeAi.install(server); server.start(); return server;
   } catch(Exception e) { throw new IllegalStateException(e); }
  }
  static String sha(byte[] bytes) { try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)); } catch(Exception e) { throw new IllegalStateException(e); } }
@@ -67,7 +67,7 @@ class RecordingTests {
   AI.stop(0);
   try(var paths=Files.walk(BASE)) { for(var p:paths.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p); }
  }
- @Autowired MockMvc mvc; @Autowired JdbcClient jdbc; @Autowired RecordingService recordings; @Autowired RecordingClient client;
+ @Autowired MockMvc mvc; @Autowired JdbcClient jdbc; @Autowired RecordingService recordings; @Autowired RecordingClient client; @Autowired SystemStatusService status;
  final List<Long> datasets=new ArrayList<>();
  long dataset,scene,otherScene,job,pendingJob,otherSceneJob,gt1,gt2,pred0,pred1;
 
@@ -101,7 +101,7 @@ class RecordingTests {
    VALUES(:j,:d,'sample-a',:i,:n,1,2,3,2,4,1.5,1,0,0,0,0,0,1,'{}') RETURNING id""").param("j",job).param("d",dataset).param("i",index).param("n",name).query(Long.class).single();
  }
  @BeforeEach void seed() {
-  MODE.set("ok"); LAST.set(null);
+  MODE.set("ok"); LAST.set(null); FakeAi.CAPS.set("ready"); status.clearCache();
   dataset=dataset("recording-test");
   scene=scene(dataset,"scene-token","scene-rec"); otherScene=scene(dataset,"scene-other","scene-other");
   // Timestamp order (sample-b, sample-a) differs from token order on purpose.
@@ -201,7 +201,7 @@ class RecordingTests {
  }
  @Test void invalidAiResultFailsOnlyTheRecordingAndANewPostRecreatesIt() throws Exception {
   String before=jobSnapshot(); long gtRows=jdbc.sql("SELECT count(*) FROM gt_annotation").query(Long.class).single();
-  Map<String,String> reasons=Map.of("count","box count","fail","HTTP 502 EXPORTER_FAILED","sdk","SDK version","checksum","checksum","traversal","unsafe recording path");
+  Map<String,String> reasons=Map.of("count","box count","fail","HTTP 502 RECORDING_EXPORT_FAILED","sdk","SDK version","checksum","checksum","traversal","unsafe recording path");
   Set<Long> failed=new HashSet<>();
   for(var mode:reasons.entrySet()) {
    MODE.set(mode.getKey());
@@ -209,7 +209,7 @@ class RecordingTests {
    work();
    assertThat(recordingStatus(id)).isEqualTo("FAILED");
    mvc.perform(get("/api/recordings/{id}",id)).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("FAILED"))
-    .andExpect(jsonPath("$.errorMessage").value(containsString(mode.getValue()))).andExpect(jsonPath("$.contentUrl").isEmpty()).andExpect(jsonPath("$.samples.length()").value(0));
+    .andExpect(jsonPath("$.errorMessage").value(containsString(mode.getValue()))).andExpect(jsonPath("$.errorCode").value(mode.getKey().equals("fail")?"RECORDING_EXPORT_FAILED":"RECORDING_INVALID_RESULT")).andExpect(jsonPath("$.contentUrl").isEmpty()).andExpect(jsonPath("$.samples.length()").value(0));
    mvc.perform(get("/api/recordings/{id}/content",id)).andExpect(status().isConflict());
   }
   assertThat(jobSnapshot()).isEqualTo(before);
@@ -246,5 +246,30 @@ class RecordingTests {
     VALUES(:d,'scene-token',:e,'0.38.1','READY',gen_random_uuid(),:p,1,repeat('a',64),'{}',now(),now()) RETURNING id""").param("d",dataset).param("e","path-"+(n++)).param("p",path).query(Long.class).single();
    mvc.perform(get("/api/recordings/{id}/content",id)).andExpect(path.equals(inside)?status().isOk():status().isNotFound());
   }
+ }
+ @Test void lostReadyFileIsReleasedAndOnlyTheRecordingIsRecreated() throws Exception {
+  String before=jobSnapshot();
+  long id=create(scene,"{\"jobId\":"+job+"}",202,false); work(); assertThat(recordingStatus(id)).isEqualTo("READY");
+  String rel=jdbc.sql("SELECT relative_path FROM scene_recording WHERE id=:id").param("id",id).query(String.class).single();
+  Files.delete(ROOT.resolve(rel));
+  mvc.perform(get("/api/recordings/{id}/content",id)).andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("RECORDING_FILE_MISSING"));
+  mvc.perform(get("/api/recordings/{id}",id)).andExpect(jsonPath("$.status").value("FAILED")).andExpect(jsonPath("$.errorCode").value("RECORDING_FILE_MISSING"));
+  long again=create(scene,"{\"jobId\":"+job+"}",202,false); assertThat(again).isNotEqualTo(id);
+  work(); assertThat(recordingStatus(again)).isEqualTo("READY"); assertThat(jobSnapshot()).isEqualTo(before);
+  // reuse path also notices a lost file without a content GET
+  rel=jdbc.sql("SELECT relative_path FROM scene_recording WHERE id=:id").param("id",again).query(String.class).single();
+  Files.delete(ROOT.resolve(rel));
+  long third=create(scene,"{\"jobId\":"+job+"}",202,false); assertThat(third).isNotIn(id,again);
+ }
+ @Test void newRecordingNeedsReadinessButReuseDoesNot() throws Exception {
+  long id=create(scene,null,202,false);
+  FakeAi.CAPS.set("down"); status.clearCache();
+  assertThat(create(scene,null,200,true)).isEqualTo(id); // live recording reused while the AI is down
+  for(var c:List.of(new String[]{"legacy","LEGACY_NOT_VERIFIED"},new String[]{"missing","AI_ENDPOINT_UNSUPPORTED"},new String[]{"down","AI_HTTP_ERROR"})) {
+   FakeAi.CAPS.set(c[0]); status.clearCache();
+   mvc.perform(post("/api/scenes/{id}/recordings",scene).contentType("application/json").content("{\"jobId\":"+job+"}"))
+    .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value(c[1]));
+  }
+  assertThat(jdbc.sql("SELECT count(*) FROM scene_recording WHERE dataset_id=:d").param("d",dataset).query(Long.class).single()).isEqualTo(1);
  }
 }

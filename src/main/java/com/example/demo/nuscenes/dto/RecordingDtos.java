@@ -17,10 +17,10 @@ public final class RecordingDtos {
  /** Detail view; list summaries pass samples=null so the field is omitted. Metadata-derived fields are null until READY. */
  public record Recording(long recordingId,long datasetId,long sceneId,String sceneToken,String sceneName,Long jobId,String status,String sdkVersion,String exportVersion,
    String coordinateFrame,String applicationId,String rerunRecordingId,String timeline,String timeTimeline,Entities entities,
-   @JsonInclude(JsonInclude.Include.NON_NULL) List<SampleMap> samples,String contentUrl,Long sizeBytes,String errorMessage,
+   @JsonInclude(JsonInclude.Include.NON_NULL) List<SampleMap> samples,String contentUrl,Long sizeBytes,String errorMessage,String errorCode,
    OffsetDateTime createdAt,OffsetDateTime startedAt,OffsetDateTime completedAt) {}
  public record Row(long recordingId,long datasetId,long sceneId,String sceneToken,String sceneName,Long jobId,String status,String sdkVersion,String exportVersion,
-   String metadata,Long sizeBytes,String failureReason,OffsetDateTime createdAt,OffsetDateTime startedAt,OffsetDateTime completedAt) {}
+   String metadata,Long sizeBytes,String failureReason,String errorCode,OffsetDateTime createdAt,OffsetDateTime startedAt,OffsetDateTime completedAt) {}
  public record JobTarget(String sceneToken,String targetType,int targets,String status) {}
  public record Work(long id,long datasetId,String sceneToken,Long jobId,String sdkVersion,String exportVersion,UUID executionToken) {}
  public record SceneSample(String token,long timestampUs) {}

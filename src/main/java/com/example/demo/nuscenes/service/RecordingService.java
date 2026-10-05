@@ -1,4 +1,5 @@
 package com.example.demo.nuscenes.service;
+import com.example.demo.nuscenes.api.CodedError;
 import com.example.demo.nuscenes.domain.Scene;
 import com.example.demo.nuscenes.dto.GtAnnotationView;
 import com.example.demo.nuscenes.dto.RecordingDtos.*;
@@ -21,27 +22,60 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class RecordingService {
  /** Short, user-visible failure reason (stored as failure_reason). */
- public static final class Invalid extends RuntimeException { public Invalid(String message) { super(message); } }
+ public static final class Invalid extends RuntimeException {
+  private final String code;
+  public Invalid(String message) { this("RECORDING_INVALID_RESULT",message); }
+  public Invalid(String code,String message) { super(message); this.code=code; }
+  public String code() { return code; }
+ }
  private final RecordingRepository repo;
+ private final SystemStatusService readiness;
  private final GtAnnotationViewRepository gt;
  private final SceneRepository scenes;
  private final RecordingFiles files;
  private final ObjectMapper json;
  private final TransactionTemplate tx;
  private final String sdkVersion,exportVersion;
- public RecordingService(RecordingRepository repo,GtAnnotationViewRepository gt,SceneRepository scenes,RecordingFiles files,ObjectMapper json,PlatformTransactionManager manager,
+ public RecordingService(RecordingRepository repo,SystemStatusService readiness,GtAnnotationViewRepository gt,SceneRepository scenes,RecordingFiles files,ObjectMapper json,PlatformTransactionManager manager,
    @Value("${recording.sdk-version:0.38.1}") String sdkVersion,@Value("${recording.export-version:ds2l-rrd-v1}") String exportVersion) {
-  this.repo=repo;this.gt=gt;this.scenes=scenes;this.files=files;this.json=json;this.tx=new TransactionTemplate(manager);this.sdkVersion=sdkVersion;this.exportVersion=exportVersion;
+  this.repo=repo;this.readiness=readiness;this.gt=gt;this.scenes=scenes;this.files=files;this.json=json;this.tx=new TransactionTemplate(manager);this.sdkVersion=sdkVersion;this.exportVersion=exportVersion;
  }
  public Created create(long sceneId,Long jobId) {
   if(jobId!=null && jobId<=0) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"jobId must be a positive job ID");
-  return tx.execute(status->{
+  Scene target=scene(sceneId);
+  // 1) Reuse a live recording (also while the AI is down). A READY row whose file is confirmed gone is released.
+  var reused=tx.execute(status->{
    Scene scene=scene(sceneId);
    if(jobId!=null) {
     var job=repo.job(scene.datasetId(),jobId).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Job not found in this dataset"));
     if(!"SCENE".equals(job.targetType()) || job.targets()!=1 || !scene.token().equals(job.sceneToken())) throw new ResponseStatusException(HttpStatus.CONFLICT,"Job targets another scene");
     if(!"COMPLETED".equals(job.status())) throw new ResponseStatusException(HttpStatus.CONFLICT,"Job has not completed successfully");
    }
+   var live=repo.live(scene.datasetId(),scene.token(),jobId,exportVersion);
+   if(live.isPresent() && !fileLost(live.get().id())) return new Created(live.get().id(),live.get().status(),true);
+   return null;
+  });
+  if(reused!=null) return reused;
+  // 2) New export only: server-side readiness check outside any transaction, then insert.
+  readiness.requireRecording(target.datasetId());
+  return insert(target,jobId);
+ }
+ /**
+  * True only when the recording root is readable and the READY file is confirmed absent; the row is then moved to
+  * FAILED(RECORDING_FILE_MISSING) so the reuse index frees it. An unreadable root (e.g. volume not mounted) is not loss.
+  */
+ boolean fileLost(long id) {
+  var row=repo.content(id).orElse(null);
+  if(row==null || !"READY".equals(row.status()) || row.relativePath()==null) return false;
+  Path root=files.root();
+  if(!Files.isDirectory(root) || !Files.isReadable(root)) return false;
+  Path candidate=root.resolve(row.relativePath()).normalize();
+  if(!candidate.startsWith(root) || !Files.notExists(candidate)) return false;
+  if(repo.markFileMissing(id,row.relativePath())==1) org.slf4j.LoggerFactory.getLogger(getClass()).warn("[RERUN] recording={} READY file {} is missing; marked FAILED",id,row.relativePath());
+  return true;
+ }
+ private Created insert(Scene scene,Long jobId) {
+  return tx.execute(status->{
    // A concurrent live row can turn FAILED between the conflict and the lookup; retry the insert in that case.
    for(int attempt=0;attempt<3;attempt++) {
     var inserted=repo.insert(scene.datasetId(),scene.token(),jobId,exportVersion,sdkVersion);
@@ -61,7 +95,12 @@ public class RecordingService {
   var row=repo.content(id).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Recording not found"));
   if(!"READY".equals(row.status())) throw new ResponseStatusException(HttpStatus.CONFLICT,"Recording is not ready");
   try { return files.resolve(row.relativePath()); }
-  catch(IOException e) { throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Recording file unavailable"); }
+  catch(IOException e) {
+   if(fileLost(id)) throw new CodedError(HttpStatus.NOT_FOUND,"RECORDING_FILE_MISSING","Recording file is missing; create the recording again");
+   Path root=files.root();
+   if(!Files.isDirectory(root) || !Files.isReadable(root)) throw new CodedError(HttpStatus.SERVICE_UNAVAILABLE,"RECORDING_STORAGE_UNAVAILABLE","Recording storage is not readable right now");
+   throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Recording file unavailable"); // unsafe/invalid path: never served
+  }
  }
  private Scene scene(long id) { return scenes.findById(id).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Scene not found")); }
  private Recording view(Row r,boolean detail) {
@@ -70,15 +109,15 @@ public class RecordingService {
   List<SampleMap> samples=!detail?null:ready && m.samples()!=null?m.samples():List.of();
   return new Recording(r.recordingId(),r.datasetId(),r.sceneId(),r.sceneToken(),r.sceneName(),r.jobId(),r.status(),r.sdkVersion(),r.exportVersion(),"WORLD",
    ready?m.applicationId():null,ready?m.rerunRecordingId():null,ready?m.timeline():null,ready?m.timeTimeline():null,ready?m.entities():null,samples,
-   ready?"/api/recordings/"+r.recordingId()+"/content":null,ready?r.sizeBytes():null,r.failureReason(),r.createdAt(),r.startedAt(),r.completedAt());
+   ready?"/api/recordings/"+r.recordingId()+"/content":null,ready?r.sizeBytes():null,r.failureReason(),r.errorCode(),r.createdAt(),r.startedAt(),r.completedAt());
  }
 
  public Optional<Work> claim() { return tx.execute(s->repo.claim()); }
  /** Builds the AI request from Spring's DB only: keyframe samples by timestamp, per-sample LIDAR_TOP, GT by token, predictions by box_index. */
  public AiRequest request(Work w) {
-  String sceneName=repo.sceneName(w.datasetId(),w.sceneToken()).orElseThrow(()->new Invalid("Scene no longer exists"));
+  String sceneName=repo.sceneName(w.datasetId(),w.sceneToken()).orElseThrow(()->new Invalid("DATA_NOT_READY","Scene no longer exists"));
   var samples=repo.samples(w.datasetId(),w.sceneToken());
-  if(samples.isEmpty()) throw new Invalid("Scene has no samples");
+  if(samples.isEmpty()) throw new Invalid("DATA_NOT_READY","Scene has no samples");
   Map<String,LidarRow> lidar=new HashMap<>();
   for(var row:repo.lidar(w.datasetId(),w.sceneToken())) lidar.putIfAbsent(row.sampleToken(),row);
   Map<String,List<AiGt>> boxes=gt.byScene(w.datasetId(),w.sceneToken()).stream()
@@ -112,7 +151,7 @@ public class RecordingService {
    mapping.add(new SampleMap(i,q.sampleToken(),q.timestampUs(),a.lidarPoints(),q.gt().stream().map(AiGt::id).toList(),q.predictions().stream().map(AiPrediction::id).toList()));
   }
   Path file;
-  try { file=files.resolve(path); } catch(IOException e) { throw new Invalid("Recording file is missing or outside the recording root"); }
+  try { file=files.resolve(path); } catch(IOException e) { throw new Invalid("RECORDING_FILE_MISSING","Recording file is missing or outside the recording root"); }
   try { if(Files.size(file)!=r.sizeBytes() || !sha256(file).equals(r.checksum())) throw new Invalid("Recording file size/checksum does not match"); }
   catch(IOException e) { throw new Invalid("Recording file cannot be read"); }
   var e=r.entities();
@@ -120,7 +159,7 @@ public class RecordingService {
    new Entities(e.lidar(),e.ego(),e.gt(),w.jobId()==null?null:e.prediction()),mapping));
   if(repo.ready(w,path,r.sizeBytes(),r.checksum(),r.sdkVersion(),metadata)!=1) throw new IllegalStateException("Recording is no longer running with this execution");
  }
- public void fail(Work w,String reason) { repo.fail(w,reason.length()>300?reason.substring(0,300):reason); }
+ public void fail(Work w,String code,String reason) { repo.fail(w,code,reason.length()>300?reason.substring(0,300):reason); }
 
  private static AiLidar lidar(LidarRow l) {
   if(l==null) return null;

@@ -23,8 +23,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # Catalog/camera/GT do not need a healthy CLIP; feature readiness comes from /api/system/status.
       ai-server:
-        condition: service_healthy
+        condition: service_started
     environment:
       DB_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:-drivescene}
       DB_USERNAME: ${POSTGRES_USER:-drivescene}
@@ -34,6 +35,7 @@ services:
       NUSCENES_ROOT: /data/nuscenes
       NUSCENES_VERSION: ${NUSCENES_VERSION:-v1.0-mini}
       NUSCENES_IMPORT_ENABLED: ${NUSCENES_IMPORT_ENABLED:-false}
+      NUSCENES_DATA_ORIGIN: ${NUSCENES_DATA_ORIGIN:-UNKNOWN}
       AI_SERVER_BASE_URL: http://ai-server:8000
       AI_SERVER_READ_TIMEOUT: ${AI_SERVER_READ_TIMEOUT:-30s}
       VESPA_DATASET_VERSION: ${NUSCENES_VERSION:-v1.0-mini}

@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 public class RecordingFiles {
  private final DatasetFiles files;
  public RecordingFiles(@Value("${recording.root}") String root) { files=new DatasetFiles(root); }
+ public Path root() { return files.root(); }
  public Path resolve(String relativePath) throws IOException {
   if(relativePath==null || relativePath.contains("..") || relativePath.contains("\\") || relativePath.contains(":")) throw new IOException("Invalid recording path");
   return files.resolve(relativePath);

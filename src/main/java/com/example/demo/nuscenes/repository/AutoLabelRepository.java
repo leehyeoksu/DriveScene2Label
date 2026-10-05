@@ -21,7 +21,8 @@ public class AutoLabelRepository {
    """).param("d",t.datasetId()).param("key",key).param("scene",t.token()).param("version",version).param("config",config)
     .param("mapping",mode+"class").param("classes",classes).query(Long.class).optional();
  }
- public Existing existing(long dataset,String key) { return jdbc.sql("SELECT id,mapping_name,requested_targets->>0 AS scene_token FROM auto_label_job WHERE dataset_id=:d AND request_key=:k").param("d",dataset).param("k",key).query(Existing.class).single(); }
+ public Optional<Existing> findExisting(long dataset,String key) { return jdbc.sql("SELECT id,mapping_name,requested_targets->>0 AS scene_token FROM auto_label_job WHERE dataset_id=:d AND request_key=:k").param("d",dataset).param("k",key).query(Existing.class).optional(); }
+ public Existing existing(long dataset,String key) { return findExisting(dataset,key).orElseThrow(); }
  public void target(long job,long dataset,String token) { jdbc.sql("INSERT INTO auto_label_job_sample(job_id,dataset_id,sample_token) VALUES(:j,:d,:t)").param("j",job).param("d",dataset).param("t",token).update(); }
  public Optional<Work> claim() {
   var pending=jdbc.sql("""
@@ -54,7 +55,7 @@ public class AutoLabelRepository {
    .param("j",job.id()).param("s",storageKey).param("p",result.artifactPath()).param("c",result.resultChecksum()).update();
   jdbc.sql("UPDATE auto_label_job SET status='COMPLETED',completed_at=now(),result_checksum=:c WHERE id=:j").param("j",job.id()).param("c",result.resultChecksum()).update();
  }
- public void fail(Work job,String reason) { jdbc.sql("UPDATE auto_label_job SET status='FAILED',completed_at=now(),failure_reason=:r WHERE id=:j AND status='RUNNING' AND execution_token=:t").param("r",reason).param("j",job.id()).param("t",job.executionToken()).update(); }
+ public void fail(Work job,String code,String reason) { jdbc.sql("UPDATE auto_label_job SET status='FAILED',completed_at=now(),failure_reason=:r,error_code=:c WHERE id=:j AND status='RUNNING' AND execution_token=:t").param("r",reason).param("c",code).param("j",job.id()).param("t",job.executionToken()).update(); }
  public Results results(long id,JobStatus status) {
   var header=jdbc.sql("SELECT mapping_name,coordinate_frame,score_type FROM auto_label_job WHERE id=:j").param("j",id).query(Header.class).single();
   var boxes=jdbc.sql("SELECT id,sample_token,box_index,detection_name,center_x,center_y,center_z,size_w,size_l,size_h,rotation_w,rotation_x,rotation_y,rotation_z,velocity_x,velocity_y,detection_score,attribute_name FROM predicted_annotation WHERE job_id=:j ORDER BY sample_token,box_index").param("j",id).query(Prediction.class).list();
@@ -64,7 +65,7 @@ public class AutoLabelRepository {
  public Optional<JobStatus> status(long id) {
   return jdbc.sql("""
    SELECT j.id AS job_id,j.dataset_id,j.status,j.failure_reason AS error_message,j.created_at,j.started_at,j.completed_at,
-    j.requested_targets->>0 AS scene_token,s.id AS scene_id,s.name AS scene_name,CAST(replace(j.mapping_name,'class','') AS integer) AS class_mode,j.mapping_name
+    j.requested_targets->>0 AS scene_token,s.id AS scene_id,s.name AS scene_name,CAST(replace(j.mapping_name,'class','') AS integer) AS class_mode,j.mapping_name,j.error_code
    FROM auto_label_job j LEFT JOIN scene s ON s.dataset_id=j.dataset_id AND s.token=j.requested_targets->>0 WHERE j.id=:j
    """).param("j",id).query(JobStatus.class).optional();
  }

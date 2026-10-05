@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(properties={"auto-label.worker.enabled=false","recording.worker.enabled=false","auto-label.dataset-version=v1.0-mini",
+@SpringBootTest(properties={"auto-label.worker.enabled=false","system-status.check-workers=false","recording.worker.enabled=false","auto-label.dataset-version=v1.0-mini",
  "spring.datasource.url=${TEST_DB_URL:jdbc:postgresql://localhost:55432/drivescene_test}",
  "spring.datasource.username=${TEST_DB_USERNAME:drivescene}","spring.datasource.password=${TEST_DB_PASSWORD:}","nuscenes.import.enabled=false"})
 @AutoConfigureMockMvc
@@ -37,18 +37,20 @@ class AutoLabelTests {
     String body=JSON.writeValueAsString(new AiResponse(UUID.randomUUID(),input.path("scene_name").asText(),8,input.path("job_id").asLong(),
      UUID.fromString(input.path("execution_token").asText()),"8class","mini_train","WORLD","VESPA_CONSTANT",Map.of("use_lidar",true),results,"run/result.json","a".repeat(64)));
     if(MODE.get().equals("fail")) body="{\"detail\":\"VESPA failed\"}";
+    if(MODE.get().equals("missing-route")) body="{\"detail\":\"Not Found\"}";
+    if(MODE.get().equals("vespa-code")) body="{\"detail\":{\"code\":\"VESPA_EXECUTION_FAILED\",\"message\":\"failed\"}}";
     byte[] bytes=body.getBytes(StandardCharsets.UTF_8);exchange.getResponseHeaders().set("Content-Type","application/json");
-    exchange.sendResponseHeaders(MODE.get().equals("fail")?502:200,bytes.length);
+    exchange.sendResponseHeaders(switch(MODE.get()) { case "fail","vespa-code"->502; case "missing-route"->404; default->200; },bytes.length);
     try(var output=exchange.getResponseBody()) { output.write(bytes); }
-   }); server.start();return server;
+   }); FakeAi.install(server); server.start();return server;
   } catch(Exception e) { throw new IllegalStateException(e); }
  }
  @DynamicPropertySource static void properties(DynamicPropertyRegistry r) { r.add("ai-server.base-url",()->"http://127.0.0.1:"+AI.getAddress().getPort()); }
  @AfterAll static void shutdown() { AI.stop(0); }
- @Autowired MockMvc mvc; @Autowired JdbcClient jdbc; @Autowired AutoLabelService jobs; @Autowired AutoLabelClient client;
+ @Autowired MockMvc mvc; @Autowired JdbcClient jdbc; @Autowired AutoLabelService jobs; @Autowired AutoLabelClient client; @Autowired SystemStatusService status;
  long dataset;
  @BeforeEach void seed() {
-  MODE.set("ok");
+  MODE.set("ok"); FakeAi.CAPS.set("ready"); status.clearCache();
   dataset=jdbc.sql("INSERT INTO dataset(name,version,storage_key,root_relative_path,source_checksum) VALUES(:n,'v1.0-mini','local','.','test') RETURNING id").param("n","auto-test-"+UUID.randomUUID()).query(Long.class).single();
   jdbc.sql("INSERT INTO capture_log(dataset_id,token,logfile,location,date_captured,vehicle,raw_payload) VALUES(:d,'log','x','x','x','x','{}')").param("d",dataset).update();
   jdbc.sql("INSERT INTO scene(dataset_id,token,log_token,name,description,nbr_samples,first_sample_token,last_sample_token,raw_payload) VALUES(:d,'scene-token','log','scene-0061','test',2,'sample-a','sample-empty','{}')").param("d",dataset).update();
@@ -101,7 +103,34 @@ class AutoLabelTests {
   for(String mode:List.of("fail","bad")) {
    MODE.set(mode);long job=create(mode);new AutoLabelWorker(jobs,client).runNextJob();
    assertThat(jobs.status(job).status()).isEqualTo("FAILED");assertThat(jobs.status(job).errorMessage()).isNotBlank();assertThat(boxes(job)).isZero();
+   assertThat(jobs.status(job).errorCode()).isEqualTo(mode.equals("fail")?"AI_HTTP_ERROR":"RESULT_VALIDATION_FAILED");
   }
+ }
+ @Test void upstreamRouteMissingIsNotATimeout() throws Exception {
+  for(String mode:List.of("missing-route","vespa-code")) {
+   MODE.set(mode);long job=create(mode);new AutoLabelWorker(jobs,client).runNextJob();
+   var st=jobs.status(job);
+   assertThat(st.status()).isEqualTo("FAILED");
+   assertThat(st.errorCode()).isEqualTo(mode.equals("missing-route")?"AI_ENDPOINT_UNSUPPORTED":"VESPA_EXECUTION_FAILED");
+   assertThat(st.errorMessage()).doesNotContainIgnoringCase("timed out");
+  }
+  mvc.perform(get("/api/auto-label/jobs/{id}",create("errcode-json-"+UUID.randomUUID()))).andExpect(jsonPath("$.errorCode").isEmpty());
+ }
+ @Test void newJobNeedsVespaReadinessButKeyReplayDoesNot() throws Exception {
+  long job=create("replay");
+  // AI down: the same key still returns the existing job (no AI call needed).
+  FakeAi.CAPS.set("down"); status.clearCache();
+  assertThat(create("replay")).isEqualTo(job);
+  long before=jdbc.sql("SELECT count(*) FROM auto_label_job WHERE dataset_id=:d").param("d",dataset).query(Long.class).single();
+  for(var c:List.of(new String[]{"down","AI_HTTP_ERROR"},new String[]{"vespa-unconfigured","VESPA_NOT_CONFIGURED"},new String[]{"vespa-configured","VESPA_RUNTIME_NOT_READY"},new String[]{"legacy","VESPA_NOT_CONFIGURED"},new String[]{"missing","AI_ENDPOINT_UNSUPPORTED"})) {
+   FakeAi.CAPS.set(c[0]); status.clearCache();
+   int refreshes=FakeAi.REFRESHES.get();
+   mvc.perform(post("/api/auto-label/jobs").header("Idempotency-Key","new-"+c[0]).contentType("application/json")
+     .content("{\"sceneToken\":\"scene-token\",\"classMode\":8,\"datasetId\":"+dataset+"}"))
+    .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value(c[1]));
+   if(c[0].equals("vespa-configured")) assertThat(FakeAi.REFRESHES.get()).isGreaterThan(refreshes); // one read-only refresh before rejecting
+  }
+  assertThat(jdbc.sql("SELECT count(*) FROM auto_label_job WHERE dataset_id=:d").param("d",dataset).query(Long.class).single()).isEqualTo(before);
  }
  @Test void terminalUpdateFailureRollsBackAllResults() throws Exception {
   long job=create("rollback");
@@ -109,6 +138,7 @@ class AutoLabelTests {
   jdbc.sql("CREATE TRIGGER test_reject_completed BEFORE UPDATE ON auto_label_job FOR EACH ROW EXECUTE FUNCTION test_reject_completed()").update();
   new AutoLabelWorker(jobs,client).runNextJob();
   assertThat(jobs.status(job).status()).isEqualTo("FAILED"); assertThat(boxes(job)).isZero();
+  assertThat(jobs.status(job).errorCode()).isEqualTo("RESULT_STORAGE_FAILED");
   assertThat(jdbc.sql("SELECT count(*) FROM auto_label_artifact WHERE job_id=:j").param("j",job).query(Long.class).single()).isZero();
   assertThat(jdbc.sql("SELECT count(*) FROM auto_label_job_sample WHERE job_id=:j AND result_received_at IS NOT NULL").param("j",job).query(Long.class).single()).isZero();
  }
