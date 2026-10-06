@@ -193,4 +193,3 @@ class CapabilityService:
 def _q(value):
     import shlex
     return shlex.quote(str(value))
-
