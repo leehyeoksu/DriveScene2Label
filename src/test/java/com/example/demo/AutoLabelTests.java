@@ -19,7 +19,8 @@ import static org.assertj.core.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(properties={"auto-label.worker.enabled=false","system-status.check-workers=false","recording.worker.enabled=false","auto-label.dataset-version=v1.0-mini",
+@SpringBootTest(properties={
+ "ingestion.worker.enabled=false","auto-label.worker.enabled=false","system-status.check-workers=false","recording.worker.enabled=false","auto-label.dataset-version=v1.0-mini",
  "spring.datasource.url=${TEST_DB_URL:jdbc:postgresql://localhost:55432/drivescene_test}",
  "spring.datasource.username=${TEST_DB_USERNAME:drivescene}","spring.datasource.password=${TEST_DB_PASSWORD:}","nuscenes.import.enabled=false"})
 @AutoConfigureMockMvc

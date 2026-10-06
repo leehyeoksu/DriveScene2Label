@@ -40,12 +40,13 @@ class RecordingService:
         parts = PurePosixPath(relative).parts
         if relative.startswith(("/", "\\")) or "\\" in relative or ":" in relative or ".." in parts or not parts:
             raise RecordingError(422, "RECORDING_INVALID_PATH", "lidar relative_path must stay under the dataset root.")
-        path = (self.data_root / relative).resolve()
-        if not path.is_relative_to(self.data_root):
-            raise RecordingError(422, "RECORDING_INVALID_PATH", "lidar relative_path must stay under the dataset root.")
-        if not path.is_file():
-            raise RecordingError(404, "RECORDING_LIDAR_NOT_FOUND", "A requested lidar file does not exist on the AI server.")
-        return path
+        from services.media_paths import media_path
+        try:
+            return media_path(self.data_root, relative)
+        except ValueError as exc:
+            raise RecordingError(422, "RECORDING_INVALID_PATH", str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise RecordingError(404, "RECORDING_LIDAR_NOT_FOUND", "A requested lidar file does not exist on the AI server.") from exc
 
     def export(self, request: RecordingRequest):
         if not self.configured():

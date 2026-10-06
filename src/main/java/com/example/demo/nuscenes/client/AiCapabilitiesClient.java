@@ -30,6 +30,13 @@ public class AiCapabilitiesClient {
   var factory=new JdkClientHttpRequestFactory(HttpClient.newBuilder().connectTimeout(connect).build()); factory.setReadTimeout(read);
   return RestClient.builder().baseUrl(url).requestFactory(factory).build();
  }
+ public Snapshot fetchUpload(boolean doRefresh,String uploadId,String version) {
+  var now=OffsetDateTime.now();
+  try {
+   String body=(doRefresh?refresh:normal).get().uri("/capabilities?refresh={r}&upload_id={id}&dataset_version={v}",doRefresh,uploadId,version).retrieve().body(String.class);
+   return new Snapshot(JSON.readTree(body),false,null,now,doRefresh);
+  } catch(RuntimeException e) { return new Snapshot(null,false,AiErrors.code(e),now,doRefresh); }
+ }
  public Snapshot fetch(boolean doRefresh) {
   var now=OffsetDateTime.now();
   try {

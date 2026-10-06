@@ -51,7 +51,7 @@ public class SystemStatusService {
   if(datasetId!=null && datasetId<=0) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"datasetId must be positive");
   var now=OffsetDateTime.now();
   DatasetRow ds=datasetId==null?null:dataset(datasetId).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Dataset not found"));
-  Snapshot snap=aiSnapshot(refresh);
+  Snapshot snap=datasetSnapshot(ds,refresh);
   Map<String,Capability> caps=new LinkedHashMap<>();
   caps.put("catalog",new Capability("READY",true,null,null,now,now.plus(LOCAL_TTL),null));
   caps.put("media",media(ds,now));
@@ -68,8 +68,8 @@ public class SystemStatusService {
  private void require(long datasetId,String key) {
   var ds=dataset(datasetId).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Dataset not found"));
   var now=OffsetDateTime.now();
-  Capability c=evaluate(key,ds,aiSnapshot(false),now);
-  if(!c.canExecute() && ("CONFIGURED".equals(c.state()) || "UNKNOWN".equals(c.state()))) c=evaluate(key,ds,aiSnapshot(true),now);
+  Capability c=evaluate(key,ds,datasetSnapshot(ds,false),now);
+  if(!c.canExecute() && ("CONFIGURED".equals(c.state()) || "UNKNOWN".equals(c.state()))) c=evaluate(key,ds,datasetSnapshot(ds,true),now);
   if(!c.canExecute()) throw new CodedError(HttpStatus.SERVICE_UNAVAILABLE,c.reasonCode()==null?"CAPABILITY_NOT_READY":c.reasonCode(),c.message()==null?"Feature is not ready":c.message());
  }
  private Capability evaluate(String key,DatasetRow ds,Snapshot snap,OffsetDateTime now) {
@@ -77,6 +77,17 @@ public class SystemStatusService {
  }
 
  // ---------------- AI snapshot cache (single flight) ----------------
+ private final Map<Long,Snapshot> uploadSnapshots=new java.util.concurrent.ConcurrentHashMap<>();
+ private Snapshot datasetSnapshot(DatasetRow ds,boolean refresh) {
+  if(ds==null || !"uploads".equals(ds.storageKey())) return aiSnapshot(refresh);
+  synchronized(uploadSnapshots) {
+   Snapshot old=uploadSnapshots.get(ds.id());
+   if(!refresh && fresh(old)) return old;
+   Snapshot next=ai.fetchUpload(refresh,ds.rootRelativePath(),ds.version());
+   if(uploadSnapshots.size()>=32) uploadSnapshots.clear();
+   uploadSnapshots.put(ds.id(),next); return next;
+  }
+ }
  Snapshot aiSnapshot(boolean refresh) {
   var c=cached;
   if(!refresh && fresh(c)) return c;
@@ -94,20 +105,21 @@ public class SystemStatusService {
  }
  private boolean fresh(Snapshot c) { return c!=null && c.fetchedAt().plus(aiTtl).isAfter(OffsetDateTime.now()); }
  /** Test hook. */
- public void clearCache() { cached=null; }
+ public void clearCache() { cached=null; uploadSnapshots.clear(); }
 
  // ---------------- capabilities ----------------
  private Capability media(DatasetRow ds,OffsetDateTime now) {
   if(ds==null) return cap("UNKNOWN",false,"DATASET_NOT_SELECTED",now,LOCAL_TTL);
-  if(!"nuscenes".equals(ds.storageKey()) || !".".equals(ds.rootRelativePath())) return cap("UNAVAILABLE",false,"MEDIA_NOT_SERVED",now,LOCAL_TTL);
-  if(!Files.isDirectory(media.root())) return cap("UNAVAILABLE",false,"MEDIA_ROOT_UNAVAILABLE",now,LOCAL_TTL);
+  try {
+   if(!Files.isDirectory(media.datasetRoot(ds.storageKey(),ds.rootRelativePath()))) return cap("UNAVAILABLE",false,"MEDIA_ROOT_UNAVAILABLE",now,LOCAL_TTL);
+  } catch(IOException e) { return cap("UNAVAILABLE",false,"MEDIA_NOT_SERVED",now,LOCAL_TTL); }
   // Spot check: the first keyframe sample's files (cameras + lidar). Not a full validation.
   var paths=jdbc.sql("""
    SELECT sd.relative_path FROM sample_data sd JOIN sample s ON s.dataset_id=sd.dataset_id AND s.token=sd.sample_token
    WHERE sd.dataset_id=:d AND sd.is_key_frame AND s.id=(SELECT min(id) FROM sample WHERE dataset_id=:d)
    """).param("d",ds.id()).query(String.class).list();
   if(paths.isEmpty()) return cap("UNAVAILABLE",false,"DATA_NOT_READY",now,LOCAL_TTL);
-  long missing=paths.stream().filter(p->{ try { media.resolve(p); return false; } catch(IOException e) { return true; } }).count();
+  long missing=paths.stream().filter(p->{ try { media.resolve(ds.storageKey(),ds.rootRelativePath(),p); return false; } catch(IOException e) { return true; } }).count();
   if(missing==paths.size()) return cap("UNAVAILABLE",false,"MEDIA_FILES_MISSING",now,LOCAL_TTL);
   if(missing>0) return cap("CONFIGURED",true,"MEDIA_FILES_MISSING",now,LOCAL_TTL);
   if("VERIFIED".equals(ds.mediaValidation())) return cap("READY",true,null,now,LOCAL_TTL);
@@ -137,7 +149,7 @@ public class SystemStatusService {
  private Capability vespa(DatasetRow ds,Snapshot snap,OffsetDateTime now) {
   if(!jobWorker) return cap("UNAVAILABLE",false,"VESPA_WORKER_DISABLED",now,LOCAL_TTL);
   if(ds!=null && "SYNTHETIC".equals(ds.origin())) return cap("UNAVAILABLE",false,"SYNTHETIC_DATASET",now,LOCAL_TTL);
-  if(ds!=null && !vespaVersion.equals(ds.version())) return cap("UNAVAILABLE",false,"DATASET_MISMATCH",now,LOCAL_TTL);
+  if(ds!=null && !"uploads".equals(ds.storageKey()) && !vespaVersion.equals(ds.version())) return cap("UNAVAILABLE",false,"DATASET_MISMATCH",now,LOCAL_TTL);
   var unreach=unreachable(snap,now); if(unreach!=null) return unreach;
   if(snap.legacy()) {
    JsonNode inf=snap.body().path("inference");

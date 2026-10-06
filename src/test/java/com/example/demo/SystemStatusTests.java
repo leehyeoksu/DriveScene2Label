@@ -20,7 +20,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /** GET /api/system/status: provenance, instance id, per-feature readiness, older AI adapter, read-only refresh (IT-02/03/04). */
-@SpringBootTest(properties={"auto-label.worker.enabled=false","recording.worker.enabled=false","system-status.check-workers=false",
+@SpringBootTest(properties={
+ "ingestion.worker.enabled=false","auto-label.worker.enabled=false","recording.worker.enabled=false","system-status.check-workers=false",
  "spring.datasource.url=${TEST_DB_URL:jdbc:postgresql://localhost:55432/drivescene_test}",
  "spring.datasource.username=${TEST_DB_USERNAME:drivescene}","spring.datasource.password=${TEST_DB_PASSWORD:}",
  "nuscenes.import.enabled=false","nuscenes.data-origin=SYNTHETIC","auto-label.dataset-version=v1.0-mini","system-status.ai-cache=0s"})

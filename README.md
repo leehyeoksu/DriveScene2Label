@@ -1,5 +1,83 @@
 # DriveScene2Label
 
+## 파일 업로드부터 검색 준비까지 (2026-10-06)
+
+웹의 **데이터 업로드 · 검색 준비**에서 압축을 푼 nuScenes 원본 폴더를 선택합니다.
+선택한 폴더 바로 아래에 `samples/`, `sweeps/`, `maps/`, `v1.0-mini/`(또는 `v1.0-trainval/`)가 있어야 합니다.
+개별 JPG·동영상만으로 씬을 만들지는 않습니다. 메타데이터가 참조하는 원본 파일이 모두 필요합니다.
+
+1. 원본 파일을 서버의 영구 `dataset_uploads` 볼륨에 저장합니다.
+2. 메타데이터·경로·DB 관계를 검증하고 데이터셋을 DB에 등록합니다.
+3. 카메라 **키프레임** 임베딩을 생성해 PostgreSQL `image_embedding`에 저장합니다.
+4. 화면에서 파일 수·DB 등록 단계·임베딩 완료 수를 확인하고 검색합니다.
+   VESPA 라벨링과 Rerun 내보내기는 등록된 데이터셋을 선택한 후 실행합니다.
+
+원본 바이트는 파일 저장소에, 파일 경로·메타데이터·임베딩·작업 상태는 DB에 보관됩니다.
+기존 데이터는 **현재 데이터셋 임베딩 생성**으로 준비합니다.
+동일 모델·전처리의 기존 벡터는 건너뛰고, 실패한 작업은 **이어서 처리**합니다.
+단일 backend 환경에서 재시작 시 실행 중이던 준비 작업을 다시 큐에 넣습니다.
+업로드 중에는 탭을 유지해야 하고, 업로드 완료 후에는 서버에서 계속 처리합니다.
+파일당 512MB, 업로드당 기본 128GiB 제한이며 `uploads.max-bytes`로 전체 한도를 조정할 수 있습니다.
+업로드 데이터의 VESPA는 로컬 실행을 지원합니다. SSH 실행기로 파일을 원격 자동 전송하지는 않습니다.
+
+### 처음 설정 — Windows + Ubuntu WSL
+
+Windows에서 Docker Desktop을 실행하고 **Settings → Resources → WSL Integration → Ubuntu**를 켭니다.
+Windows CMD 또는 PowerShell에서 Ubuntu로 들어갑니다.
+
+```text
+wsl -d Ubuntu
+```
+
+이후 명령은 Ubuntu 터미널에서 실행합니다. 저장소가 이미 있으면 clone을 생략합니다.
+
+```bash
+git clone https://github.com/leehyeoksu/DriveScene2Label.git
+cd DriveScene2Label
+bash scripts/dev.sh setup
+bash scripts/dev.sh up
+```
+
+`setup`은 `.env`가 없을 때만 복사하고 임의 DB 비밀번호를 설정합니다.
+기존 `.env`는 덮어쓰지 않습니다. 새 설치는 빈 원본 폴더로 시작하여 웹에서 업로드합니다.
+기존 데이터 폴더를 연결하려면 `NUSCENES_HOST_PATH`를 실제 경로로,
+`NUSCENES_IMPORT_ENABLED=true`로 설정합니다. 출처는 `NUSCENES_DATA_ORIGIN`에 명시합니다.
+NVIDIA GPU를 지원하는 Docker Desktop WSL 환경에서 실행합니다.
+
+### 프론트·백엔드 개별 실행
+
+프로젝트 루트에서:
+
+```bash
+bash scripts/dev.sh backend
+bash scripts/dev.sh frontend
+```
+
+백엔드 명령은 DB·AI 서버도 함께 켭니다. 프론트도 Docker로 실행하므로 호스트 Node가 필요 없습니다.
+소스 자동 반영이 필요한 개발 환경에서는 Node 22로 `bash scripts/dev.sh frontend-dev`를 실행합니다
+(개발 웹 주소: http://localhost:5173).
+
+### 통합 실행·종료
+
+```bash
+bash scripts/dev.sh up       # 빌드 후 프론트·백엔드·AI·DB 실행
+bash scripts/dev.sh start    # 기존 이미지로 다시 켜기
+bash scripts/dev.sh status
+bash scripts/dev.sh logs     # Ctrl+C: 로그 보기만 종료
+bash scripts/dev.sh stop     # 모두 종료, DB와 원본 파일 유지
+```
+
+통합 웹 주소: **http://localhost:3000** (`WEB_PORT`로 변경), 백엔드: http://localhost:8080.
+`compose.yml + compose.gpu.yml + compose.web.yml`을 함께 사용합니다.
+VESPA 작업 중 서버 재시작은 추론을 끊으므로 작업 완료 후 변경 이미지를 적용합니다.
+`down -v`는 DB·업로드·결과 볼륨까지 삭제하므로 일반 종료에는 쓰지 않습니다.
+
+API: `POST /api/dataset-ingestions` → 파일별 multipart `POST /api/dataset-ingestions/{id}/files`
+(`path`, `file`) → `POST /api/dataset-ingestions/{id}/complete` (`fileCount`).
+`GET /api/dataset-ingestions`로 상태를 조회하고 `POST .../{id}/retry`로 재시도합니다.
+기존 데이터: `POST /api/datasets/{id}/index`, 범위 조회: `GET /api/datasets/{id}/index`.
+
+
 nuScenes 기반 **3D Auto-Labeling + 자연어 Scene Retrieval** 백엔드입니다. 카메라 이미지를 CLIP 벡터로 저장하고 자연어로 scene을 검색합니다. 선택한 scene은 VESPA로 3D pseudo-label을 생성하여 GT와 분리해 저장합니다.
 
 - [프론트엔드 REST API 명세](README_API.md)

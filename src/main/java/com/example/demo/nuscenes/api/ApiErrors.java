@@ -5,6 +5,8 @@ import org.springframework.web.server.ResponseStatusException;
 @RestControllerAdvice
 public class ApiErrors {
  public record Error(String code,String message) {}
+ @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+ public ResponseEntity<Error> uploadTooLarge(Exception e) { return ResponseEntity.status(413).body(new Error("UPLOAD_TOO_LARGE","파일 한 개의 크기는 512MB 이하여야 해요")); }
  @ExceptionHandler(ResponseStatusException.class)
  public ResponseEntity<Error> status(ResponseStatusException e) { return ResponseEntity.status(e.getStatusCode()).body(new Error("HTTP_"+e.getStatusCode().value(),e.getReason()==null?"Request failed":e.getReason())); }
  @ExceptionHandler(CodedError.class)

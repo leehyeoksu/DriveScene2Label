@@ -1,3 +1,4 @@
+import { DatasetManager } from '@/features/datasets/DatasetManager';
 import { useQuery } from '@tanstack/react-query';
 import { Search } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -91,6 +92,7 @@ export function SceneSearchPage() {
         <DataOriginBadge datasetId={datasetId} />
       </header>
       <main className="search-main">
+        <DatasetManager datasetId={datasetId} onOpen={setDataset} />
         <section className="search-head" aria-labelledby="search-title">
           <h1 className="search-title" id="search-title">찾고 싶은 주행 장면을<br />문장으로 적어 보세요</h1>
           <p className="search-sub">nuScenes 씬을 자연어로 찾고, 6개 카메라와 LiDAR로 바로 확인할 수 있어요.</p>
@@ -119,7 +121,7 @@ export function SceneSearchPage() {
               {describeError(datasets.error)}
             </StateBox>
           ) : datasets.data && datasets.data.length === 0 ? (
-            <StateBox title="등록된 데이터셋이 없어요">서버에 nuScenes 메타데이터를 가져온 뒤 다시 열어 주세요.</StateBox>
+            <StateBox title="등록된 데이터셋이 없어요">위의 데이터 업로드 메뉴에서 nuScenes 원본 폴더를 선택해 주세요.</StateBox>
           ) : datasetParam != null && datasets.data && !dataset ? (
             <StateBox kind="error" title="링크의 데이터셋을 찾을 수 없어요" actions={<button type="button" className="btn btn--weak" onClick={() => navigate(searchUrl(null))}>데이터셋 다시 고르기</button>}>
               dataset {datasetParam}은(는) 이 서버에 없어요.

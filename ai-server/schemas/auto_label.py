@@ -9,6 +9,8 @@ class AutoLabelRequest(BaseModel):
     class_mode: Literal[1, 3, 8] = 8
     job_id: int | None = Field(default=None, gt=0)
     execution_token: UUID | None = None
+    upload_id: UUID | None = None
+    dataset_version: Literal["v1.0-mini", "v1.0-trainval"] | None = None
 
     @model_validator(mode="after")
     def paired_identity(self):

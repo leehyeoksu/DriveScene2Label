@@ -61,7 +61,8 @@ class ClipService:
     def encode_image_path(self, image_path, mode):
         self._ready()
         try:
-            path = clip_core.resolve(self.image_root, image_path)
+            from services.media_paths import media_path
+            path = media_path(self.image_root, image_path)
         except FileNotFoundError as exc:
             raise ClipError(404, "IMAGE_NOT_FOUND", "Image or configured image root does not exist.") from exc
         except ValueError as exc:

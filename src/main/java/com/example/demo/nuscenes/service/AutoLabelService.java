@@ -35,14 +35,14 @@ public class AutoLabelService {
   });
   var replay=tx.execute(status->repo.findExisting(target.datasetId(),requestKey).map(old->replay(old,target,request)));
   if(replay!=null && replay.isPresent()) return replay.get();
-  if(!version.equals(target.version())) throw bad("Dataset version must match the configured VESPA dataset");
+  if(!version.equals(target.version()) && !readiness.dataset(target.datasetId()).map(d->"uploads".equals(d.storageKey())).orElse(false)) throw bad("Dataset version must match the configured VESPA dataset");
   // 2) New job only: the server checks VESPA readiness itself, outside any DB transaction.
   readiness.requireVespa(target.datasetId());
   // 3) Insert; a concurrent request with the same key falls back to replay.
   return tx.execute(status->{
    var samples=repo.sceneSamples(target); if(samples.isEmpty()) throw bad("Scene has no samples");
    var inserted=repo.insert(target,requestKey,request.classMode(),json.writeValueAsString(classes(request.classMode())),modelVersion,
-      json.writeValueAsString(Map.of("dataset_version",version,"config_name","configs/vlm/p_final.yaml")));
+      json.writeValueAsString(Map.of("dataset_version",target.version(),"config_name","configs/vlm/p_final.yaml")));
    if(inserted.isEmpty()) return replay(repo.existing(target.datasetId(),requestKey),target,request);
    long job=inserted.get(); for(String token:samples) repo.target(job,target.datasetId(),token);
    return new Created(job,"PENDING");

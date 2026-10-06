@@ -576,3 +576,17 @@
   .search-note { margin-top: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--tx-2); font-size: var(--fs-sm); }
   .scope-note { color: var(--tx-3); font-size: var(--fs-2xs); font-weight: 500; }
 }
+
+.dataset-manager { margin-bottom: 28px; border: 1px solid #3b444b; border-radius: 16px; background: #1c2024; color: #e9edef; }
+.dataset-manager summary { cursor: pointer; padding: 16px 20px; font-weight: 700; }
+.dataset-manager summary span { margin-left: 16px; color: #aebbc3; font-size: 13px; font-weight: 400; }
+.dataset-manager__body { padding: 0 20px 20px; }
+.dataset-manager__body p { line-height: 1.6; margin-bottom: 16px; }
+.dataset-manager__form { display: flex; flex-wrap: wrap; gap: 14px; margin: 18px 0; }
+.dataset-manager__form label { display: grid; gap: 6px; font-size: 13px; flex: 1 1 180px; }
+.dataset-manager__form input, .dataset-manager__form select { min-width: 0; max-width: 100%; background: #292e33; color: #eef2f5; border: 1px solid #59626b; border-radius: 7px; padding: 9px; }
+.dataset-manager__actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.dataset-manager__jobs { list-style: none; padding: 0; margin: 16px 0 0; }
+.dataset-manager__jobs li { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 0; border-top: 1px solid #363e46; }
+.dataset-manager [role=alert] { color: #ffaaa4; }
+.dataset-manager progress { accent-color: #4fe0d5; max-width: 100%; }

@@ -106,3 +106,5 @@ graphify-out/
 *.rrd
 *.pem
 *.key
+
+/data/

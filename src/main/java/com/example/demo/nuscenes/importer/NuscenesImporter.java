@@ -34,6 +34,13 @@ public class NuscenesImporter {
 
  @Transactional(rollbackFor = Exception.class)
  public ImportResult importDataset(String version) throws IOException {
+  return importFrom(files, version, "nuScenes", "nuscenes", ".", origin);
+ }
+ @Transactional(rollbackFor = Exception.class)
+ public ImportResult importUploaded(String id,String version,String name,String dataOrigin) throws IOException {
+  return importFrom(new DatasetFiles(files.datasetRoot("uploads",id).toString()),version,name+" ["+id+"]","uploads",id,dataOrigin);
+ }
+ private ImportResult importFrom(DatasetFiles files,String version,String name,String storage,String relative,String dataOrigin) throws IOException {
   if (!version.matches("v[0-9]+\\.[0-9]+-[a-zA-Z0-9_-]+")) throw new IllegalArgumentException("Invalid nuScenes version");
   // Keep concurrent imports from interleaving. This lock is released with the transaction.
   jdbc.getJdbcTemplate().execute("SELECT pg_advisory_xact_lock(731240921)");
@@ -53,13 +60,13 @@ public class NuscenesImporter {
    }
   }
   String checksum = HexFormat.of().formatHex(digest.digest());
-  var datasetParams = new MapSqlParameterSource().addValue("version", version).addValue("checksum", checksum);
+  var datasetParams = new MapSqlParameterSource().addValue("version", version).addValue("checksum", checksum).addValue("name",name).addValue("storage",storage).addValue("relative",relative);
   jdbc.update("""
     INSERT INTO dataset(name, version, storage_key, root_relative_path, source_checksum)
-    VALUES ('nuScenes', :version, 'nuscenes', '.', :checksum)
+    VALUES (:name, :version, :storage, :relative, :checksum)
     ON CONFLICT(name, version) DO NOTHING
     """, datasetParams);
-  var dataset = jdbc.queryForMap("SELECT id, source_checksum FROM dataset WHERE name = 'nuScenes' AND version = :version", datasetParams);
+  var dataset = jdbc.queryForMap("SELECT id, source_checksum FROM dataset WHERE name = :name AND version = :version", datasetParams);
   if (!checksum.equals(dataset.get("source_checksum"))) throw new IllegalStateException("This dataset version already has different metadata; import under a separate dataset version instead.");
   long datasetId = ((Number) dataset.get("id")).longValue();
   for (var table : ImportSchema.TABLES) {
@@ -94,7 +101,7 @@ public class NuscenesImporter {
    if (links.size() == 500) { insertAttributeLinks(links); links.clear(); }
   }
   if (!links.isEmpty()) insertAttributeLinks(links);
-  recordProvenance(datasetId, checksum);
+  recordProvenance(datasetId, checksum, dataOrigin);
   log.info("nuScenes import complete: dataset={}, skipped map links outside this subset={}", datasetId, skipped);
   return new ImportResult(datasetId, counts, skipped);
  }
@@ -103,7 +110,7 @@ public class NuscenesImporter {
   * Every sample_data/map path was resolved above, so media_validation is PARTIAL (existence, not content).
   * An existing explicit origin is never overwritten; only an UNKNOWN row with the same checksum is upgraded.
   */
- private void recordProvenance(long datasetId, String checksum) {
+ private void recordProvenance(long datasetId, String checksum, String origin) {
   int changed = jdbc.update("""
     INSERT INTO dataset_provenance(dataset_id, origin, metadata_checksum, media_validation, recorded_by, validated_at)
     VALUES (:d, :o, :c, 'PARTIAL', 'importer', now())

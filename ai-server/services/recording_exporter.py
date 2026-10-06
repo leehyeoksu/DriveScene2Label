@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 
 APPLICATION_ID = "drivescene2label"
@@ -107,11 +108,13 @@ def export(request, data_root, output, rr):
                 rec.log(ENTITIES["lidar"], rr.Points3D(np.zeros((0, 3), dtype=np.float32), colors=np.zeros((0, 3), dtype=np.uint8), radii=np.zeros(0, dtype=np.float32)))
                 points = 0
             else:
-                path = (root / lidar["relative_path"]).resolve()
-                if not path.is_relative_to(root):
-                    raise ExportError(EXIT_INVALID, "lidar path escapes the dataset root")
-                if not path.is_file():
-                    raise ExportError(EXIT_LIDAR_MISSING, "lidar file is missing")
+                from services.media_paths import media_path
+                try:
+                    path = media_path(root, lidar["relative_path"])
+                except ValueError as exc:
+                    raise ExportError(EXIT_INVALID, "lidar path escapes the dataset root") from exc
+                except FileNotFoundError as exc:
+                    raise ExportError(EXIT_LIDAR_MISSING, "lidar file is missing") from exc
                 world = lidar_world(path, lidar)
                 ego_t = finite(lidar["ego_translation"], 3, "ego_translation")
                 ego_q = unit_wxyz(lidar["ego_rotation"], "ego_rotation")

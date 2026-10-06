@@ -28,7 +28,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * IT-08: with the real schedulers running, a VESPA call blocked inside the AI (latch) must not stop a GT-only
  * recording from being exported and becoming READY. Each worker still runs at most one task at a time.
  */
-@SpringBootTest(properties={"auto-label.worker.enabled=true","recording.worker.enabled=true","auto-label.poll-delay-ms=100","recording.poll-delay-ms=100",
+@SpringBootTest(properties={
+ "ingestion.worker.enabled=false","auto-label.worker.enabled=true","recording.worker.enabled=true","auto-label.poll-delay-ms=100","recording.poll-delay-ms=100",
  "auto-label.dataset-version=v1.0-mini","nuscenes.import.enabled=false","system-status.ai-cache=0s",
  "spring.datasource.url=${TEST_DB_URL:jdbc:postgresql://localhost:55432/drivescene_test}",
  "spring.datasource.username=${TEST_DB_USERNAME:drivescene}","spring.datasource.password=${TEST_DB_PASSWORD:}"})

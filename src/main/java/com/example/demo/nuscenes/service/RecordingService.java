@@ -118,6 +118,7 @@ public class RecordingService {
   String sceneName=repo.sceneName(w.datasetId(),w.sceneToken()).orElseThrow(()->new Invalid("DATA_NOT_READY","Scene no longer exists"));
   var samples=repo.samples(w.datasetId(),w.sceneToken());
   if(samples.isEmpty()) throw new Invalid("DATA_NOT_READY","Scene has no samples");
+  var ds=readiness.dataset(w.datasetId()).orElseThrow();
   Map<String,LidarRow> lidar=new HashMap<>();
   for(var row:repo.lidar(w.datasetId(),w.sceneToken())) lidar.putIfAbsent(row.sampleToken(),row);
   Map<String,List<AiGt>> boxes=gt.byScene(w.datasetId(),w.sceneToken()).stream()
@@ -127,7 +128,7 @@ public class RecordingService {
   List<AiSample> out=new ArrayList<>();
   for(int i=0;i<samples.size();i++) {
    var s=samples.get(i);
-   out.add(new AiSample(i,s.token(),s.timestampUs(),lidar(lidar.get(s.token())),boxes.getOrDefault(s.token(),List.of()),predictions.getOrDefault(s.token(),List.of())));
+   out.add(new AiSample(i,s.token(),s.timestampUs(),lidar(lidar.get(s.token()),ds.storageKey(),ds.rootRelativePath()),boxes.getOrDefault(s.token(),List.of()),predictions.getOrDefault(s.token(),List.of())));
   }
   return new AiRequest(w.id(),w.executionToken(),sceneName,w.sceneToken(),w.jobId(),out);
  }
@@ -161,9 +162,9 @@ public class RecordingService {
  }
  public void fail(Work w,String code,String reason) { repo.fail(w,code,reason.length()>300?reason.substring(0,300):reason); }
 
- private static AiLidar lidar(LidarRow l) {
+ private static AiLidar lidar(LidarRow l,String storage,String root) {
   if(l==null) return null;
-  return new AiLidar(l.relativePath(),List.of(l.sensorTx(),l.sensorTy(),l.sensorTz()),List.of(l.sensorRw(),l.sensorRx(),l.sensorRy(),l.sensorRz()),
+  return new AiLidar(com.example.demo.nuscenes.storage.DatasetFiles.aiPath("uploads".equals(storage)?storage:"nuscenes","uploads".equals(storage)?root:".",l.relativePath()),List.of(l.sensorTx(),l.sensorTy(),l.sensorTz()),List.of(l.sensorRw(),l.sensorRx(),l.sensorRy(),l.sensorRz()),
    List.of(l.egoTx(),l.egoTy(),l.egoTz()),List.of(l.egoRw(),l.egoRx(),l.egoRy(),l.egoRz()));
  }
  private static AiGt gt(GtAnnotationView g) {

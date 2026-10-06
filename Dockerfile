@@ -10,6 +10,7 @@ FROM eclipse-temurin:21-jre-jammy AS runtime
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 10001 app && useradd --uid 10001 --gid app --no-create-home app
+RUN mkdir -p /data/uploads && chown app:app /data/uploads
 COPY --from=build --chown=app:app /workspace/build/libs/*.jar /app/app.jar
 USER app
 EXPOSE 8080

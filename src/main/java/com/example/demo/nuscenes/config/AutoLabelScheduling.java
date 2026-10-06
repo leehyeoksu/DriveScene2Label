@@ -12,6 +12,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 public class AutoLabelScheduling {
  @Bean(destroyMethod="shutdown") public ThreadPoolTaskScheduler autoLabelScheduler() { return scheduler("vespa-worker-"); }
  @Bean(destroyMethod="shutdown") public ThreadPoolTaskScheduler recordingScheduler() { return scheduler("recording-worker-"); }
+ @Bean(destroyMethod="shutdown") public ThreadPoolTaskScheduler ingestionScheduler() { return scheduler("dataset-worker-"); }
  private static ThreadPoolTaskScheduler scheduler(String prefix) {
   var s=new ThreadPoolTaskScheduler(); s.setPoolSize(1); s.setThreadNamePrefix(prefix); s.setWaitForTasksToCompleteOnShutdown(false); return s;
  }

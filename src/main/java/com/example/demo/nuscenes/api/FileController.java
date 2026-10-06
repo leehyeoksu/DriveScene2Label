@@ -21,10 +21,12 @@ public class FileController {
  @GetMapping("/maps/{id}/content") public ResponseEntity<Resource> map(@PathVariable long id) { return content("map_asset", id); }
  private ResponseEntity<Resource> content(String table, long id) {
   // table is an internal constant from the two handlers, never request input.
-  String path=jdbc.sql("SELECT a.relative_path FROM " + table + " a JOIN dataset d ON d.id=a.dataset_id WHERE a.id=:id AND d.storage_key='nuscenes' AND d.root_relative_path='.'")
-   .param("id",id).query(String.class).optional().orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"File not found"));
+  var row=jdbc.sql("SELECT a.relative_path,d.storage_key,d.root_relative_path FROM " + table + " a JOIN dataset d ON d.id=a.dataset_id WHERE a.id=:id")
+   .param("id",id).query((rs,n)->new String[]{rs.getString(1),rs.getString(2),rs.getString(3)}).optional()
+   .orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"File not found"));
+  String path=row[0];
   try {
-   Path file=files.resolve(path);
+   Path file=files.resolve(row[1],row[2],path);
    MediaType type=path.endsWith(".jpg") ? MediaType.IMAGE_JPEG : path.endsWith(".png") ? MediaType.IMAGE_PNG : MediaType.APPLICATION_OCTET_STREAM;
    return ResponseEntity.ok().contentType(type).contentLength(Files.size(file)).header("X-Content-Type-Options","nosniff").body(new FileSystemResource(file));
   } catch(IOException e) { throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Dataset file unavailable"); }

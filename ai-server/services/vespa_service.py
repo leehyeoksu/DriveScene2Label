@@ -69,6 +69,18 @@ class VespaService:
             raise ValueError("VESPA_SSH_PORT must be a number")
         self.lock = Lock()
 
+    def for_upload(self, upload_id, version):
+        from copy import copy
+        from services.media_paths import upload_root
+        if self.executor != "local":
+            raise VespaError(409, "UPLOAD_LOCAL_ONLY", "Uploaded datasets require the local executor.")
+        if version not in ("v1.0-mini", "v1.0-trainval"):
+            raise VespaError(422, "DATASET_MISMATCH", "Invalid uploaded dataset version.")
+        selected = copy(self)  # same global execution lock, independent dataset paths
+        selected.data_root = upload_root(str(upload_id))
+        selected.version = version
+        return selected
+
     # ---------- configuration ----------
     def _metadata_ready(self):
         return all((self.data_root / self.version / f"{t}.json").is_file() for t in ("scene", "sample"))
