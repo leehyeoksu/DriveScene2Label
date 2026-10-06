@@ -7,11 +7,11 @@ import type { SampleRef, Scene } from '@/api/models';
 import { jobResultsQuery, jobStatusQuery } from '@/api/queries';
 import { CLASS_COLORS, CLASS_MODES } from '@/lib/classes';
 import { elapsedMs, formatElapsed } from '@/lib/jobs/createJob';
-import { findReceipt, receiptsForScene } from '@/lib/jobs/receipts';
+import { findReceipt, receiptsForScene, unverifiedReceiptsForScene } from '@/lib/jobs/receipts';
 import { dismissJobSubmission, newJobSnapshot, submitJob, useSubmissions } from '@/lib/jobs/submissions';
 import { errorGuide } from '@/lib/errorCodes';
 import { useNow } from '@/hooks/useNow';
-import { capabilityMessage, stateLabel } from '@/api/system';
+import { capabilityMessage, stateLabel, type Capability } from '@/api/system';
 import { useSystemStatus } from '@/features/system/useSystemStatus';
 import { useServer } from '@/stores/server';
 import { useWorkspace, type PaneId } from '@/stores/workspace';
@@ -115,7 +115,8 @@ export function JobPanel({ paneId, scene, samples, paneLabel }: Props) {
             {CLASS_MODES[pane.classMode].map((c) => <span key={c} className="cls-chip"><i className="cls-dot" style={{ ['--c' as string]: CLASS_COLORS[c] }} />{c}</span>)}
           </div>
         </div>
-        <ReadinessBox paneId={paneId} vespa={vespa} refreshing={system.refreshing} onRefresh={() => void system.refresh()} />
+        <ReadinessBox paneId={paneId} vespa={vespa} last={system.lastKnown('vespa')} lastChecked={system.lastChecked}
+          refreshing={system.refreshing} onRefresh={() => void system.refresh()} onRecheck={() => void system.refetch()} />
         <button type="button" className="btn btn--primary btn--block" onClick={startNewRun} disabled={busy || blocked} data-testid={`run-job-${paneId}`}>
           {busy ? <span className="spin" aria-hidden="true" /> : <Sparkles className="icon" aria-hidden="true" />}{label}
         </button>
@@ -235,9 +236,19 @@ export function JobPanel({ paneId, scene, samples, paneLabel }: Props) {
           </div>
         )}
         <JobHistory paneId={paneId} jobIds={sceneReceipts.map((r) => r.jobId)} current={jobId} />
+        <LegacyNote paneId={paneId} count={unverifiedReceiptsForScene(receipts, scene.datasetId, scene.token).length} />
         <JobLookup onOpen={(id) => watchJob(paneId, id)} />
       </section>
     </>
+  );
+}
+
+function LegacyNote({ paneId, count }: { paneId: PaneId; count: number }) {
+  if (!count) return null;
+  return (
+    <p className="help" data-testid={`legacy-receipts-${paneId}`}>
+      이전 버전에서 저장된 이 씬의 실행 기록 {count}건은 어느 서버(DB)의 작업인지 확인할 수 없어 이 서버의 작업으로 연결하지 않았어요. 기록은 브라우저에 그대로 보존돼요.
+    </p>
   );
 }
 
@@ -282,7 +293,20 @@ function JobLookup({ onOpen }: { onOpen: (id: number) => void }) {
   );
 }
 
-function ReadinessBox({ paneId, vespa, refreshing, onRefresh }: { paneId: PaneId; vespa: import('@/api/system').Capability; refreshing: boolean; onRefresh: () => void }) {
+const fmtTime = (t: number) => [new Date(t).getHours(), new Date(t).getMinutes(), new Date(t).getSeconds()].map((n) => String(n).padStart(2, '0')).join(':');
+
+interface ReadinessProps {
+  paneId: PaneId;
+  vespa: Capability;
+  /** Last successful answer; shown for context only, never used to allow a run. */
+  last?: Capability;
+  lastChecked: number;
+  refreshing: boolean;
+  onRefresh: () => void;
+  onRecheck: () => void;
+}
+
+function ReadinessBox({ paneId, vespa, last, lastChecked, refreshing, onRefresh, onRecheck }: ReadinessProps) {
   if (vespa.canExecute) {
     return (
       <p className="help" data-testid={`vespa-ready-${paneId}`}>
@@ -290,11 +314,20 @@ function ReadinessBox({ paneId, vespa, refreshing, onRefresh }: { paneId: PaneId
       </p>
     );
   }
-  const fixedByRefresh = !['SYNTHETIC_DATASET', 'VESPA_WORKER_DISABLED', 'DATASET_MISMATCH'].includes(vespa.reasonCode ?? '');
+  // Status call failed / answer expired / still checking: re-read with a light GET. The heavy environment re-check
+  // (refresh=true) is only offered for real capability reasons.
+  const statusProblem = (vespa.reasonCode ?? '').startsWith('STATUS_') && vespa.reasonCode !== 'STATUS_API_UNSUPPORTED';
+  const fixedByRefresh = !statusProblem && !['SYNTHETIC_DATASET', 'VESPA_WORKER_DISABLED', 'DATASET_MISMATCH'].includes(vespa.reasonCode ?? '');
   return (
     <div className="readiness readiness--blocked" role="status" data-testid={`vespa-readiness-${paneId}`} data-state={vespa.state} data-reason={vespa.reasonCode ?? ''}>
       <div className="row"><ShieldAlert className="icon" aria-hidden="true" /><b>라벨 생성 {stateLabel(vespa.state)}</b>{vespa.executor && <span className="dim">· {vespa.executor === 'ssh' ? '원격(SSH)' : '로컬'}</span>}</div>
       <div>{capabilityMessage(vespa)} 기존 완료 결과 조회와 센서 탐색은 그대로 쓸 수 있어요.</div>
+      {statusProblem && last && lastChecked > 0 && (
+        <div className="dim" data-testid={`vespa-last-known-${paneId}`}>마지막 확인 {fmtTime(lastChecked)}: {stateLabel(last.state)} (현재 판정에는 쓰지 않아요)</div>
+      )}
+      {statusProblem && vespa.reasonCode !== 'STATUS_CHECKING' && (
+        <button type="button" className="btn btn--sm btn--weak" onClick={onRecheck}><RefreshCw className="icon" aria-hidden="true" />상태 다시 확인</button>
+      )}
       {fixedByRefresh && (
         <button type="button" className="btn btn--sm btn--weak" onClick={onRefresh} disabled={refreshing}>
           {refreshing ? <span className="spin" aria-hidden="true" /> : <RefreshCw className="icon" aria-hidden="true" />}실행 환경 확인

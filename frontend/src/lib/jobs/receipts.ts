@@ -21,7 +21,11 @@ export interface JobReceipt {
   requestedAt: number;
 }
 
-/** Receipts written before instance scoping (v1). Never used directly; see migrateLegacyReceipts. */
+/**
+ * Receipts written before instance scoping (v1). Their original database is unknown, and a server answering with the
+ * same datasetId/sceneToken for the same jobId does NOT prove it was the same request (a re-imported dataset gets the
+ * same tokens and ids). They are kept untouched as unverified history and never attached to a server (FU-02).
+ */
 export interface LegacyReceipt {
   jobId: number;
   datasetId: number;
@@ -35,11 +39,13 @@ export interface LegacyReceipt {
 
 /** Placeholder scope for a backend without the status API (no instanceId). */
 export const UNSCOPED = 'unscoped';
+/** paneId given to v2 entries by the former automatic v1 migration; their origin is equally unproven. */
+export const LEGACY_PANE = 'legacy';
+const verified = (r: JobReceipt) => r.paneId !== LEGACY_PANE;
 
 const KEY = 'ds2l.jobReceipts.v2';
 const VERSION = 2;
 const LEGACY_KEY = 'ds2l.jobReceipts';
-const LEGACY_DONE_KEY = 'ds2l.jobReceipts.legacyChecked';
 const MAX = 120;
 
 function isLegacy(r: unknown): r is LegacyReceipt {
@@ -89,41 +95,33 @@ export function subscribeReceipts(l: Listener): () => void {
   };
 }
 
-/** Receipts of one scene on one server, newest first. Shared by every pane showing the scene. */
+/** Receipts of one scene on one server, newest first. Shared by every pane showing the scene. Unverified entries excluded. */
 export function receiptsForScene(all: JobReceipt[], instanceId: string, datasetId: number, sceneToken: string): JobReceipt[] {
-  return all.filter((r) => r.instanceId === instanceId && r.datasetId === datasetId && r.sceneToken === sceneToken).sort((a, b) => b.requestedAt - a.requestedAt);
+  return all.filter((r) => verified(r) && r.instanceId === instanceId && r.datasetId === datasetId && r.sceneToken === sceneToken).sort((a, b) => b.requestedAt - a.requestedAt);
 }
 
 export function findReceipt(all: JobReceipt[], instanceId: string, jobId: number): JobReceipt | undefined {
-  return all.find((r) => r.instanceId === instanceId && r.jobId === jobId);
+  return all.find((r) => verified(r) && r.instanceId === instanceId && r.jobId === jobId);
+}
+
+/**
+ * Unverified history for a scene: v1 receipts plus v2 entries created by the former migration. Shown only as a count
+ * ("이 서버 작업으로 연결하지 않음"); never restored, selected or used to verify job ownership.
+ */
+export function unverifiedReceiptsForScene(all: JobReceipt[], datasetId: number, sceneToken: string): Array<LegacyReceipt> {
+  const fromV1 = legacyReceipts().filter((r) => r.datasetId === datasetId && r.sceneToken === sceneToken);
+  const fromV2 = all.filter((r) => !verified(r) && r.datasetId === datasetId && r.sceneToken === sceneToken);
+  const seen = new Set<string>();
+  return [...fromV1, ...fromV2].filter((r) => {
+    const k = `${r.jobId}:${r.idempotencyKey}:${r.requestedAt}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }
 
 export function legacyReceipts(): LegacyReceipt[] {
   return readStored(LEGACY_KEY, 1, isList(isLegacy), []);
-}
-
-/**
- * Move v1 receipts under an instance only when the server confirms the job's context (same dataset and scene token).
- * Unconfirmed, mismatched or unreachable entries are not restored. Runs once per instance.
- */
-export async function migrateLegacyReceipts(instanceId: string, lookup: (jobId: number) => Promise<{ datasetId: number; sceneToken: string | null } | null>): Promise<number> {
-  const done = readStored<string[]>(LEGACY_DONE_KEY, 1, (v): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string'), []);
-  if (done.includes(instanceId)) return 0;
-  let moved = 0;
-  for (const r of legacyReceipts().slice(0, 30)) {
-    let server: { datasetId: number; sceneToken: string | null } | null = null;
-    try {
-      server = await lookup(r.jobId);
-    } catch {
-      return moved; // server not answering: try again next time, do not mark as done
-    }
-    if (server && server.sceneToken && server.datasetId === r.datasetId && server.sceneToken === r.sceneToken) {
-      saveReceipt({ ...r, instanceId, datasetChecksum: null, paneId: 'legacy' });
-      moved++;
-    }
-  }
-  writeStored(LEGACY_DONE_KEY, 1, [...done, instanceId].slice(-20));
-  return moved;
 }
 
 /** Test hook. */

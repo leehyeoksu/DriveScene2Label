@@ -104,7 +104,7 @@ export function SceneSearchPage() {
             <div className="search-note" role="status" data-testid="search-readiness" data-reason={searchCap.reasonCode ?? ''}>
               <span className={`status status--${searchCap.state === 'UNAVAILABLE' ? 'FAILED' : 'UNKNOWN'}`}><i />검색 {stateLabel(searchCap.state)}</span>
               <span>{capabilityMessage(searchCap)}{searchBlocked ? ' 씬 목록 탐색은 그대로 쓸 수 있어요.' : ''}</span>
-              <button type="button" className="btn btn--sm btn--ghost" onClick={() => void system.refresh()} disabled={system.refreshing}>다시 확인</button>
+              <button type="button" className="btn btn--sm btn--ghost" onClick={() => void system.recheck(searchCap)} disabled={system.refreshing}>다시 확인</button>
             </div>
           )}
           <div className="examples">

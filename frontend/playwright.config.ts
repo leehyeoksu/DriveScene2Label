@@ -21,5 +21,7 @@ export default defineConfig({
     { name: 'tablet-1024', use: { ...devices['Desktop Chrome'], viewport: { width: 1024, height: 768 } }, grep: /@layout/ },
     { name: 'tablet-768', use: { ...devices['Desktop Chrome'], viewport: { width: 768, height: 1024 } }, grep: /@layout/ },
     { name: 'mobile-375', use: { ...devices['Desktop Chrome'], viewport: { width: 375, height: 812 }, hasTouch: true }, grep: /@layout/ },
+    // Playwright's headless WebKit engine (not the Safari app): keyboard/focus/reduced-motion checks only.
+    { name: 'webkit-1440', use: { ...devices['Desktop Safari'], viewport: { width: 1440, height: 900 } }, grep: /@a11y/ },
   ],
 });

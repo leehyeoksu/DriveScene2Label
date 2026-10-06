@@ -102,7 +102,7 @@ export function RecordingPanel({ paneId, scene, enabled }: Props) {
       {!capability.canExecute && (
         <span className="readiness readiness--blocked" data-testid="recording-readiness" data-reason={capability.reasonCode ?? ''}>
           3D 생성 준비 안 됨 · {capabilityMessage(capability)}{' '}
-          <button type="button" className="btn btn--sm btn--weak" onClick={() => void system.refresh()} disabled={system.refreshing}>다시 확인</button>
+          <button type="button" className="btn btn--sm btn--weak" onClick={() => void system.recheck(capability)} disabled={system.refreshing}>다시 확인</button>
         </span>
       )}
       {submission?.status === 'error' && <span className="mono">{describeError(submission.error)}</span>}

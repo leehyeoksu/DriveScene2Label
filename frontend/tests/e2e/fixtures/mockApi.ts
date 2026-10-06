@@ -75,9 +75,13 @@ export interface MockOptions {
     recording?: 'READY' | 'UNAVAILABLE';
     instanceId?: string;
     missing?: boolean;
+    /** Per-feature validity (expiresAt − checkedAt) in ms; default 600 s (the app caps it at 90 s). */
+    ttlMs?: Partial<Record<'media' | 'search' | 'vespa' | 'recording', number>>;
   };
   /** Delay (ms) before answering job POSTs. */
   postDelayMs?: number;
+  /** Delay (ms) before answering recording POSTs. */
+  recordingPostDelayMs?: number;
   /** First N recording content GETs fail with 500. */
   contentFailures?: number;
   /** errorCode on a FAILED job 41. */
@@ -85,6 +89,12 @@ export interface MockOptions {
 }
 
 export interface MockLog {
+  /** Set at any time during a test: the status API then fails (HTTP 500 or dropped connection) until reset to null. */
+  statusFailure: null | 500 | 'abort';
+  /** Set during a test: status GETs stay unanswered (no response, no error) until set back to false. */
+  statusHang: boolean;
+  /** Set during a test to make the status API report another DB instance (server swapped). */
+  instanceId: string | null;
   statusCalls: Array<{ datasetId: string | null; refresh: boolean }>;
   contentGets: number;
   jobPosts: Array<{ key: string | null; body: unknown }>;
@@ -108,13 +118,15 @@ export function gtFor(sid: number) {
 }
 
 export async function installMockApi(page: Page, opts: MockOptions = {}): Promise<MockLog> {
-  const log: MockLog = { statusCalls: [], contentGets: 0, jobPosts: [], recordingPosts: [], statusGets: 0, resultGets: 0 };
+  const log: MockLog = { statusFailure: null, statusHang: false, instanceId: null, statusCalls: [], contentGets: 0, jobPosts: [], recordingPosts: [], statusGets: 0, resultGets: 0 };
   let contentFailures = opts.contentFailures ?? 0;
   let vespaRefreshed = false;
   let postAborts = opts.postAborts ?? 0;
   let resultsFailures = opts.resultsFailures ?? 0;
   const seq = opts.jobSequence ?? ['PENDING', 'RUNNING', 'COMPLETED'];
-  let recordingState: { id: number; status: string; jobId: number | null } | null = null;
+  // Recordings belong to one scene of one server instance (a swapped DB does not have them).
+  const recordings: Array<{ id: number; status: string; jobId: number | null; sceneId: number; instanceId: string }> = [];
+  const currentInstance = () => log.instanceId ?? opts.status?.instanceId ?? '11111111-1111-4111-8111-111111111111';
   let recordingSeq = 4;
 
   await page.route('**/api/**', async (route) => {
@@ -127,13 +139,23 @@ export async function installMockApi(page: Page, opts: MockOptions = {}): Promis
     if (p === '/api/system/status') {
       const refresh = url.searchParams.get('refresh') === 'true';
       log.statusCalls.push({ datasetId: url.searchParams.get('datasetId'), refresh });
+      if (log.statusHang) {
+        // never answered while hanging; released (as a dropped connection) only to let the page close cleanly
+        await new Promise<void>((resolve) => { const t = setInterval(() => { if (!log.statusHang) { clearInterval(t); resolve(); } }, 200); });
+        return route.abort('connectionrefused').catch(() => undefined);
+      }
+      if (log.statusFailure === 'abort') return route.abort('connectionrefused');
+      if (log.statusFailure === 500) return json(route, { code: 'HTTP_500', message: 'status failed' }, 500);
       const st = opts.status ?? {};
       if (st.missing) return json(route, { timestamp: '2026-10-05T00:00:00Z', status: 404, error: 'Not Found', path: p }, 404);
       if (refresh) vespaRefreshed = true;
       const now = new Date().toISOString();
-      const later = new Date(Date.now() + 600_000).toISOString();
+      const nowMs = Date.parse(now);
+      const later = new Date(nowMs + 600_000).toISOString();
       const cap = (state: string, reasonCode: string | null, message: string | null, extra: Record<string, unknown> = {}) =>
         ({ state, canExecute: state === 'READY', reasonCode, message, checkedAt: now, expiresAt: later, ...extra });
+      const ttl = (k: 'media' | 'search' | 'vespa' | 'recording', c: Record<string, unknown>) =>
+        (st.ttlMs?.[k] != null ? { ...c, expiresAt: new Date(nowMs + st.ttlMs[k]!).toISOString() } : c);
       const origin = st.origin ?? 'UNKNOWN';
       let vespa = cap('READY', null, null, { executor: 'local' });
       const mode = st.vespa ?? 'READY';
@@ -142,14 +164,14 @@ export async function installMockApi(page: Page, opts: MockOptions = {}): Promis
       else if (mode === 'UNAVAILABLE') vespa = cap('UNAVAILABLE', st.vespaReason ?? 'VESPA_NOT_CONFIGURED', 'VESPA 실행 환경이 설정되지 않았어요.', { executor: 'local' });
       const ds = url.searchParams.get('datasetId');
       return json(route, {
-        schemaVersion: 1, instanceId: st.instanceId ?? '11111111-1111-4111-8111-111111111111', checkedAt: now,
+        schemaVersion: 1, instanceId: currentInstance(), checkedAt: now,
         dataset: ds ? { id: Number(ds), version: 'v1.0-mini', origin, metadataChecksum: 'c'.repeat(64), mediaValidation: 'PARTIAL' } : null,
         capabilities: {
           catalog: cap('READY', null, null),
-          media: { ...cap('CONFIGURED', 'MEDIA_NOT_FULLY_VALIDATED', '센서 파일 일부만 확인했어요.'), canExecute: true },
-          search: st.search === 'UNAVAILABLE' ? cap('UNAVAILABLE', 'EMBEDDINGS_NOT_READY', '이 데이터셋의 검색 인덱스(이미지 임베딩)가 아직 없어요.') : cap('READY', null, '검색 인덱스 이미지 10개'),
-          vespa,
-          recording: st.recording === 'UNAVAILABLE' ? cap('UNAVAILABLE', 'RECORDING_NOT_CONFIGURED', '3D recording exporter가 설정되지 않았어요.') : cap('READY', null, null),
+          media: ttl('media', { ...cap('CONFIGURED', 'MEDIA_NOT_FULLY_VALIDATED', '센서 파일 일부만 확인했어요.'), canExecute: true }),
+          search: ttl('search', st.search === 'UNAVAILABLE' ? cap('UNAVAILABLE', 'EMBEDDINGS_NOT_READY', '이 데이터셋의 검색 인덱스(이미지 임베딩)가 아직 없어요.') : cap('READY', null, '검색 인덱스 이미지 10개')),
+          vespa: ttl('vespa', vespa),
+          recording: ttl('recording', st.recording === 'UNAVAILABLE' ? cap('UNAVAILABLE', 'RECORDING_NOT_CONFIGURED', '3D recording exporter가 설정되지 않았어요.') : cap('READY', null, null)),
         },
       });
     }
@@ -239,18 +261,22 @@ export async function installMockApi(page: Page, opts: MockOptions = {}): Promis
     if ((r = m(/^\/api\/scenes\/(\d+)\/recordings$/))) {
       if (req.method() === 'POST') {
         log.recordingPosts.push({ sceneId: Number(r[1]), body: req.postDataJSON() });
+        const instance = currentInstance();
+        if (opts.recordingPostDelayMs) await new Promise((res) => setTimeout(res, opts.recordingPostDelayMs));
         recordingSeq++;
         const fail = opts.recording === 'fail-then-ready' && log.recordingPosts.length === 1;
-        recordingState = { id: recordingSeq, status: fail ? 'FAILED' : 'READY', jobId: (req.postDataJSON() as { jobId?: number }).jobId ?? null };
+        recordings.unshift({ id: recordingSeq, status: fail ? 'FAILED' : 'READY', jobId: (req.postDataJSON() as { jobId?: number }).jobId ?? null, sceneId: Number(r[1]), instanceId: instance });
         return json(route, { recordingId: recordingSeq, status: 'PENDING', reused: false }, 202);
       }
-      const list = opts.recording === 'ready' && !recordingState ? [recordingView(5, 'READY', null, Number(r[1]))] : recordingState ? [recordingView(recordingState.id, recordingState.status, recordingState.jobId, Number(r[1]))] : [];
+      const sceneId = Number(r[1]);
+      const mine = recordings.filter((x) => x.sceneId === sceneId && x.instanceId === currentInstance());
+      const list = opts.recording === 'ready' && !recordings.length ? [recordingView(5, 'READY', null, sceneId)] : mine.map((x) => recordingView(x.id, x.status, x.jobId, x.sceneId));
       return json(route, list);
     }
     if ((r = m(/^\/api\/recordings\/(\d+)$/))) {
       const id = Number(r[1]);
-      const st = recordingState?.id === id ? recordingState : { id, status: 'READY', jobId: null };
-      return json(route, recordingView(id, st.status, st.jobId, 21));
+      const st = recordings.find((x) => x.id === id) ?? { id, status: 'READY', jobId: null, sceneId: 21 };
+      return json(route, recordingView(id, st.status, st.jobId, st.sceneId));
     }
     if ((r = m(/^\/api\/recordings\/(\d+)\/content$/))) {
       log.contentGets++;

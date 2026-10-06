@@ -5,7 +5,7 @@ import { boxKeyForSelection, indexForSample } from '@/features/viewer/recordingM
 import { jobResultsDto, jobStatusDto } from '@/test/fixtures';
 import { comparisonClass } from './classes';
 import { createJob, elapsedMs, newRunIntent } from './jobs/createJob';
-import { _resetReceiptCache, findReceipt, loadReceipts, migrateLegacyReceipts, receiptsForScene, saveReceipt } from './jobs/receipts';
+import { _resetReceiptCache, findReceipt, loadReceipts, receiptsForScene, saveReceipt, unverifiedReceiptsForScene } from './jobs/receipts';
 import { mapRelative, nearestIndex, playbackDelayMs, relativeProgress } from './time/timeline';
 import type { Recording } from '@/api/models';
 
@@ -89,22 +89,23 @@ describe('job receipts (instance scoped)', () => {
     _resetReceiptCache();
     expect(loadReceipts()).toEqual([]);
   });
-  it('migrates v1 receipts only when the server confirms dataset and scene', async () => {
-    const legacy = (jobId: number, sceneToken: string) => ({ jobId, datasetId: 1, sceneId: 7, sceneToken, sceneName: 's', classMode: 8, idempotencyKey: `k${jobId}`, requestedAt: jobId });
-    localStorage.setItem('ds2l.jobReceipts', JSON.stringify({ v: 1, data: [legacy(1, 'a'), legacy(2, 'a'), legacy(3, 'a')] }));
-    const server: Record<number, { datasetId: number; sceneToken: string | null } | null> = {
-      1: { datasetId: 1, sceneToken: 'a' }, // confirmed
-      2: { datasetId: 1, sceneToken: 'other' }, // same id, other scene: another DB
-      3: null, // unknown on this server
-    };
-    expect(await migrateLegacyReceipts('db-z', async (id) => server[id] ?? null)).toBe(1);
-    expect(loadReceipts().map((r) => [r.instanceId, r.jobId])).toEqual([['db-z', 1]]);
-    expect(await migrateLegacyReceipts('db-z', async () => { throw new Error('must not run twice'); })).toBe(0);
+  it('never attaches v1 receipts to a server, even when that server has the same datasetId/sceneToken/jobId (FU-02)', () => {
+    const v1 = { jobId: 41, datasetId: 1, sceneId: 7, sceneToken: 'a', sceneName: 's', classMode: 8, idempotencyKey: 'old-db-request-key', requestedAt: 5 };
+    localStorage.setItem('ds2l.jobReceipts', JSON.stringify({ v: 1, data: [v1] }));
+    _resetReceiptCache();
+    expect(receiptsForScene(loadReceipts(), 'db-new', 1, 'a')).toEqual([]);
+    expect(findReceipt(loadReceipts(), 'db-new', 41)).toBeUndefined();
+    expect(unverifiedReceiptsForScene(loadReceipts(), 1, 'a').map((r) => r.idempotencyKey)).toEqual(['old-db-request-key']);
+    expect(JSON.parse(localStorage.getItem('ds2l.jobReceipts')!).data).toEqual([v1]); // preserved untouched
   });
-  it('does not mark migration done while the server is unreachable', async () => {
-    localStorage.setItem('ds2l.jobReceipts', JSON.stringify({ v: 1, data: [{ jobId: 1, datasetId: 1, sceneId: 7, sceneToken: 'a', sceneName: 's', classMode: 8, idempotencyKey: 'k', requestedAt: 1 }] }));
-    await migrateLegacyReceipts('db-q', async () => { throw new Error('down'); });
-    expect(await migrateLegacyReceipts('db-q', async () => ({ datasetId: 1, sceneToken: 'a' }))).toBe(1);
+  it('treats v2 entries made by the former migration as unverified, keeps normal v2 entries', () => {
+    saveReceipt({ ...base, instanceId: 'db-x', jobId: 41, paneId: 'legacy', idempotencyKey: 'old' });
+    saveReceipt({ ...base, instanceId: 'db-x', jobId: 42, idempotencyKey: 'new', requestedAt: 9 });
+    _resetReceiptCache();
+    expect(receiptsForScene(loadReceipts(), 'db-x', 1, 'a').map((r) => r.jobId)).toEqual([42]);
+    expect(findReceipt(loadReceipts(), 'db-x', 41)).toBeUndefined();
+    expect(unverifiedReceiptsForScene(loadReceipts(), 1, 'a').map((r) => r.jobId)).toEqual([41]);
+    expect(loadReceipts()).toHaveLength(2); // nothing deleted
   });
 });
 

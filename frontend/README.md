@@ -18,7 +18,7 @@ Spring이 다른 PC에 있으면 `API_PROXY_TARGET`을 그 주소로 바꾼다. 
 | `npm run typecheck` | `tsc -b --noEmit` |
 | `npm run build` | 타입 검사 + 제품 빌드(`dist/`). Rerun WASM(약 51MB, gzip 16MB)은 별도 asset이며 작업대 화면에서만 lazy load |
 | `npm test` | Vitest 단위 테스트(기하·DTO 변환·시간·재시도·receipt·A/B 상태·이미지 캐시) |
-| `npm run test:e2e` | Playwright. `/api/*`를 실제 DTO 형식 route fixture로 응답하는 UI 흐름 검증(실제 서버 연동 아님) |
+| `npm run test:e2e` | Playwright. `/api/*`를 실제 DTO 형식 route fixture로 응답하는 UI 흐름 검증(실제 서버 연동 아님). `webkit-1440` project는 `@a11y` 검사만 Playwright headless WebKit으로 실행(Safari 앱 검수 아님, `npx playwright install webkit` 필요) |
 
 Rerun 기술 검증 e2e는 실제 rerun-sdk 0.38.1로 만든 `.rrd`가 있을 때만 실행된다.
 
@@ -73,17 +73,19 @@ tests/live/     실제 Spring 대상 검증
 | TanStack Query | dataset·scene·samples·sample detail·GT·calibration(`calibratedSensorToken`별)·pose(파일별)·검색·job·recording |
 | Zustand | 패널별 dataset/scene/requested·displayed sample/재생/속도/레이어/선택/classMode/job/결과 job/recording/보기 |
 | URL | `/scenes?dataset&q`, `/scenes/:id?dataset&sample&job&view=split|six`, `/compare?datasetA&sceneA&sampleA&jobA&…&sync=relative&active=B` |
-| localStorage | 배치 선호(`ds2l.layout`), job 생성 receipt(`ds2l.jobReceipts`, 최대 60개). 이미지·점군·결과는 저장하지 않음 |
+| localStorage | 배치 선호(`ds2l.layout`), job 생성 receipt(`ds2l.jobReceipts.v2`, 서버 instanceId별, 최대 120개). v1 `ds2l.jobReceipts`는 읽기만 하고 수정·연결하지 않음. 이미지·점군·결과는 저장하지 않음 |
 | 메모리 | 카메라 JPG blob URL LRU(참조 중인 이미지 유지, 나머지 48개 초과 시 revoke·다운로드 취소) |
 
 ## 주요 구현 결정
 
 ### 연동 개선 (2026-10-05, [개선 기획서](../docs/frontend-integration-plan.md))
 
-- `GET /api/system/status`를 30초마다(숨겨진 탭 제외) 읽어 데이터 출처 배지(테스트 데이터/출처 미확인/nuScenes 원본)와 기능별 준비 상태를 표시한다. VESPA 실행·recording 생성은 `canExecute=true`일 때만 버튼을 연다. CONFIGURED/UNKNOWN은 "실행 환경 확인"(refresh=true, 읽기 전용)으로 다시 확인한다. 상태 API가 없는 이전 서버는 실행을 막고 "출처 정보 없음"으로 표시한다. 검색은 서버가 UNAVAILABLE이라고 할 때만 막는다.
+- `GET /api/system/status`를 읽어 데이터 출처 배지(테스트 데이터/출처 미확인/nuScenes 원본)와 기능별 준비 상태를 표시한다. VESPA 실행·recording 생성은 `canExecute=true`일 때만 버튼을 연다. CONFIGURED/UNKNOWN은 "실행 환경 확인"(refresh=true, 읽기 전용)으로 다시 확인한다. 상태 API가 없는 이전 서버는 실행을 막고 "출처 정보 없음"으로 표시한다. 검색은 서버가 UNAVAILABLE이라고 할 때만 막는다.
+- 준비 상태 판정(2026-10-06, FU-01): 화면이 쓰는 값은 "현재 판정"뿐이다. 최신 status 조회가 실패하면(연결 실패·HTTP 오류) Query 캐시에 이전 READY가 남아 있어도 모든 기능을 `UNKNOWN / STATUS_UNREACHABLE`로 보고 실행을 막는다. 유효 시간은 브라우저 시계로 `응답 수신 시각 + min(서버 expiresAt − checkedAt, 90초)`이며 지나면 `UNKNOWN / STATUS_EXPIRED`다(서버·브라우저 시계 차이 무시). 이전 응답은 "마지막 확인 HH:MM:SS: …(현재 판정에는 쓰지 않아요)"로만 보인다. 다시 읽기 간격은 실행 기능(media·search·vespa·recording) 중 가장 이른 만료 1초 전, 최소 10초·최대 30초이며 만료 시각과 탭 복귀 때도 다시 읽는다. 기능마다 만료 시각이 다르면 새 응답이 없어도 각 만료 시각에 화면을 다시 평가한다(예: search 15초 → VESPA 60초 → recording 90초, 2026-10-06 보완). 만료 시각의 재조회는 진행 중인 GET이 있으면 그 요청을 함께 기다리고 새로 보내지 않는다(이 hook을 쓰는 컴포넌트가 여럿이어도 만료 1회당 최대 1건). `STATUS_*` 사유의 "상태 다시 확인"은 가벼운 GET이고, 실제 기능 사유일 때만 `refresh=true`("실행 환경 확인")를 보낸다. 이미 받은 완료 결과·박스 표시는 막지 않는다.
+- 이전 작업 이력(FU-02): v1 receipt(`ds2l.jobReceipts`)와 이전 자동 이전이 만든 v2 `paneId='legacy'` 항목은 원래 DB를 증명할 수 없어 어떤 서버의 job으로도 복원·선택·소속 검증에 쓰지 않는다. 같은 jobId·dataset·sceneToken이 일치해도 마찬가지다(재import된 DB는 같은 값을 가질 수 있음). 저장 내용은 지우지 않고 작업 패널에 "확인되지 않은 이전 기록 N건"으로만 표시한다.
 - job 실패는 서버 `errorCode`로 원인·조치를 안내한다(`lib/errorCodes.ts`). 코드 없는 HTTP 502/504는 중계/상위 서비스 오류로 표시하며 모델 실패로 단정하지 않는다.
 - 요청 snapshot(`lib/jobs/submissions.ts`): instanceId·dataset/checksum·scene·pane·classMode·key·요청 시각·UI generation. 요청은 컴포넌트 밖에서 이어지며, 응답은 snapshot으로 receipt를 남기고 그 pane이 같은 서버·dataset·scene·generation일 때만 화면에 연결한다. pane generation은 다른 씬을 열 때마다 증가한다(A→B→A도 새 값).
-- receipt는 `ds2l.jobReceipts.v2`에 서버 instanceId별로 저장한다. v1 receipt는 서버의 job 문맥(dataset·sceneToken)이 일치할 때만 옮긴다. instanceId가 바뀌면 서버 데이터 캐시와 패널의 job/recording 선택을 비운다.
+- receipt는 `ds2l.jobReceipts.v2`에 서버 instanceId별로 저장한다. instanceId가 바뀌면 서버 데이터 캐시와 패널의 job/recording 선택을 비운다.
 - Rerun: 파일 다운로드 실패와 Viewer 시작 실패를 구분하고 "같은 recording 다시 열기"는 이전 fetch·channel·listener·Viewer를 정리한 뒤 같은 파일만 다시 연다(생성 POST 없음). 45초 이상 열리지 않으면 다시 열기를 안내한다. 서버가 `RECORDING_FILE_MISSING`을 주면 recording 상태를 다시 읽어 재생성을 안내한다.
 - GT/예측 토글은 **카메라 라벨 범위**다(그룹 이름·안내 표시). 3D 보기의 표시는 Viewer에서 조절하며, 토글↔3D 연동과 목록→3D 선택 강조는 후속 미완료다.
 

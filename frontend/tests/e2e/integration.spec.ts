@@ -153,3 +153,121 @@ test.describe('IT-10 라벨 토글 적용 범위', () => {
     await expect(page.getByTestId('recording-badge')).toContainText('카메라 라벨 토글과 별개');
   });
 });
+
+test.describe('FU-01 상태 조회 실패·만료 뒤 이전 READY 미사용', () => {
+  for (const failure of [500, 'abort'] as const) {
+    test(`READY → 상태 API ${failure === 500 ? 'HTTP 500' : '연결 실패'}: 새 실행 차단, 기존 결과·작업 조회 유지, 복구 시 다시 허용`, async ({ page }) => {
+      const log = await installMockApi(page, { jobSequence: ['COMPLETED'] });
+      await page.goto(ws(21, '&job=41&view=six'));
+      const run = page.getByTestId('run-job-single');
+      await expect(run).toBeEnabled();
+      await expect(page.locator('.cam-tile[data-channel="CAM_FRONT"] g[data-source="VESPA"]')).toHaveCount(1);
+      log.statusFailure = failure;
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); // triggers a status re-read
+      const box = page.getByTestId('vespa-readiness-single');
+      await expect(box).toHaveAttribute('data-reason', 'STATUS_UNREACHABLE');
+      await expect(run).toBeDisabled();
+      await expect(page.getByTestId('vespa-last-known-single')).toContainText('준비됨');
+      // previous completed result and job status stay usable
+      await expect(page.locator('[data-status="COMPLETED"]')).toBeVisible();
+      await expect(page.locator('.cam-tile[data-channel="CAM_FRONT"] g[data-source="VESPA"]')).toHaveCount(1);
+      // a light re-check that still fails keeps it blocked (no heavy refresh=true is sent for a status problem)
+      const refreshesBefore = log.statusCalls.filter((c) => c.refresh).length;
+      await box.getByRole('button', { name: '상태 다시 확인' }).click();
+      await expect(run).toBeDisabled();
+      expect(log.statusCalls.filter((c) => c.refresh).length).toBe(refreshesBefore);
+      log.statusFailure = null;
+      await box.getByRole('button', { name: '상태 다시 확인' }).click();
+      await expect(run).toBeEnabled();
+      expect(log.jobPosts).toHaveLength(0);
+      expect(log.recordingPosts).toHaveLength(0);
+    });
+  }
+
+  test('수동 환경 확인과 뒤따른 GET이 모두 실패해도 이전 READY로 돌아가지 않는다', async ({ page }) => {
+    const log = await installMockApi(page, { status: { vespa: 'CONFIGURED' } });
+    await page.goto(ws(21));
+    const run = page.getByTestId('run-job-single');
+    await expect(run).toBeDisabled();
+    log.statusFailure = 500;
+    await page.getByRole('button', { name: '실행 환경 확인' }).click();
+    await expect(page.getByTestId('vespa-readiness-single')).toHaveAttribute('data-reason', 'STATUS_UNREACHABLE');
+    await expect(run).toBeDisabled();
+    expect(log.jobPosts).toHaveLength(0);
+  });
+});
+
+test.describe('FU-02 구버전 이력의 DB 귀속 방지', () => {
+  const INSTANCE = '11111111-1111-4111-8111-111111111111';
+  // A request made against ANOTHER database: same datasetId/sceneToken/jobId as this server's job 41, different request.
+  const v1 = { jobId: 41, datasetId: DATASET.id, sceneId: 21, sceneToken: 'scene-tok-61', sceneName: 'scene-0061', classMode: 8, idempotencyKey: 'old-db-request-key', requestedAt: 1_700_000_000_000 };
+
+  test('v1 기록은 서버 job의 dataset/scene이 같아도 이 서버 작업으로 연결하지 않고 미확인으로 보존한다', async ({ page }) => {
+    await page.addInitScript((r) => { localStorage.setItem('ds2l.jobReceipts', JSON.stringify({ v: 1, data: [r] })); }, v1);
+    await installMockApi(page, { jobSequence: ['RUNNING'] });
+    await page.goto(ws(21));
+    await expect(page.getByText('아직 연결된 작업이 없어요')).toBeVisible();
+    await expect(page.getByTestId('legacy-receipts-single')).toContainText('1건');
+    await page.reload(); // repeated initialisation does not attach it either
+    await expect(page.getByText('아직 연결된 작업이 없어요')).toBeVisible();
+    const stored = await page.evaluate(() => [localStorage.getItem('ds2l.jobReceipts'), localStorage.getItem('ds2l.jobReceipts.v2')]);
+    expect(JSON.parse(stored[0]!).data).toHaveLength(1); // v1 kept as is
+    expect(stored[1] === null || JSON.parse(stored[1]).data.every((r: { paneId: string }) => r.paneId !== 'legacy')).toBe(true);
+  });
+
+  test('과거 로직이 귀속시킨 legacy v2 기록은 미확인으로 다루고, 정상 v2 기록은 그대로 복원한다', async ({ page }) => {
+    const legacyV2 = { ...v1, instanceId: INSTANCE, datasetChecksum: null, paneId: 'legacy' };
+    const normal = { ...v1, jobId: 77, sceneId: 22, sceneToken: 'scene-tok-103', sceneName: 'scene-0103', idempotencyKey: 'k-new', instanceId: INSTANCE, datasetChecksum: null, paneId: 'single', requestedAt: 1_800_000_000_000 };
+    await page.addInitScript((d) => { localStorage.setItem('ds2l.jobReceipts.v2', JSON.stringify({ v: 2, data: d })); }, [legacyV2, normal]);
+    await installMockApi(page, { jobSequence: ['RUNNING'] });
+    await page.goto(ws(21));
+    await expect(page.getByText('아직 연결된 작업이 없어요')).toBeVisible();
+    await expect(page.getByTestId('legacy-receipts-single')).toContainText('1건');
+    await page.goto(ws(22));
+    await expect(page.getByTestId('job-card-single')).toContainText('작업 #77');
+    const v2 = await page.evaluate(() => JSON.parse(localStorage.getItem('ds2l.jobReceipts.v2')!).data);
+    expect(v2).toHaveLength(2); // nothing deleted or overwritten
+  });
+});
+
+test.describe('기능별 만료 시점의 화면 갱신 (만료 보완)', () => {
+  test('응답 없이도 VESPA는 60초, recording은 90초에 각각 실행 버튼이 막히고 기존 결과는 유지된다', async ({ page }) => {
+    await page.clock.install();
+    const log = await installMockApi(page, { jobSequence: ['COMPLETED'], status: { ttlMs: { search: 15_000, vespa: 60_000, recording: 90_000 } } });
+    await page.goto(ws(21, '&job=41'));
+    const run = page.getByTestId('run-job-single');
+    const create = page.getByTestId('create-recording');
+    const box = page.getByTestId('vespa-readiness-single');
+    await expect(run).toBeEnabled();
+    await expect(create).toBeEnabled();
+    await expect(page.locator('[data-status="COMPLETED"]')).toBeVisible();
+    log.statusHang = true; // every later status GET stays unanswered
+    const getsBefore = log.statusCalls.length;
+
+    await page.clock.runFor(16_000); // search expired; VESPA/recording still valid
+    await expect(run).toBeEnabled();
+    await expect(create).toBeEnabled();
+
+    await page.clock.runFor(46_000); // t ≈ 62 s
+    await expect(run).toBeDisabled();
+    await expect(box).toHaveAttribute('data-reason', 'STATUS_EXPIRED');
+    await expect(page.getByTestId('vespa-last-known-single')).toContainText('준비됨');
+    await expect(create).toBeEnabled(); // recording valid until 90 s
+    await expect(page.locator('[data-status="COMPLETED"]')).toBeVisible(); // existing result kept
+    await expect(page.locator('.cam-tile[data-channel="CAM_FRONT"] g[data-source="VESPA"]')).toHaveCount(1);
+
+    await page.clock.runFor(30_000); // t ≈ 92 s
+    await expect(create).toBeDisabled();
+    await expect(run).toBeDisabled();
+    await page.clock.runFor(60_000); // nothing left to expire: only the bounded poll, no GET loop
+    expect(log.statusCalls.length - getsBefore).toBeLessThanOrEqual(3);
+    expect(log.statusCalls.every((c) => !c.refresh)).toBe(true);
+
+    log.statusHang = false; // fresh answers again
+    await box.getByRole('button', { name: '상태 다시 확인' }).click();
+    await expect(run).toBeEnabled();
+    await expect(create).toBeEnabled();
+    expect(log.jobPosts).toHaveLength(0);
+    expect(log.recordingPosts).toHaveLength(0);
+  });
+});

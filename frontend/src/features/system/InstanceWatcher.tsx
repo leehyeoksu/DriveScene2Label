@@ -1,9 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
-import type { JobStatusDto } from '@/api/dto';
-import { getJson } from '@/api/http';
 import { systemStatusQuery } from '@/api/system';
-import { migrateLegacyReceipts } from '@/lib/jobs/receipts';
 import { readStored, writeStored } from '@/lib/storage';
 import { useServer } from '@/stores/server';
 import { toast } from '@/stores/toast';
@@ -17,7 +14,13 @@ const LAST = 'ds2l.lastInstance';
  */
 export function InstanceWatcher() {
   const qc = useQueryClient();
-  const { data } = useQuery(systemStatusQuery(null));
+  const { data, refetch } = useQuery(systemStatusQuery(null));
+  // A tab coming back to the foreground re-checks which server it is talking to (polling pauses while hidden).
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === 'visible') void refetch(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [refetch]);
   const setInstance = useServer((s) => s.setInstance);
   useEffect(() => {
     if (!data) return;
@@ -31,15 +34,7 @@ export function InstanceWatcher() {
       toast('다른 서버(DB)에 연결됐어요. 이전 서버의 작업 기록은 연결하지 않아요', 'info');
     }
     writeStored(LAST, 1, id);
-    void migrateLegacyReceipts(id, async (jobId) => {
-      try {
-        const s = await getJson<JobStatusDto>(`/api/auto-label/jobs/${jobId}`);
-        return { datasetId: s.datasetId, sceneToken: s.sceneToken ?? null };
-      } catch (e) {
-        if ((e as { status?: number }).status === 404) return null;
-        throw e;
-      }
-    });
+    // v1 receipts (no instanceId) are deliberately NOT migrated: their database cannot be proven (FU-02).
   }, [data, qc, setInstance]);
   return null;
 }
