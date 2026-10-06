@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # CLIP image embeddings for camera files -> image_embedding table (pgvector).
 # Runs on the host in a Python venv (.venv) so it can use the local GPU; the DB is the Docker Compose db service,
-# reached on 127.0.0.1:55433 (ports in compose.yml). Needs: .env, docker compose up -d db, and one Docker import.
+# reached on 127.0.0.1:<DB_PORT> (caller env > ENV_FILE > 55433; ports in compose.yml). Needs: .env (or ENV_FILE),
+# docker compose up -d db for the same project, and one Docker import.
 # All arguments pass through to embedding/embed_images.py (see --help).
 set -euo pipefail
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -9,8 +10,15 @@ cd -- "$project_dir"
 env_file="${ENV_FILE:-.env}"
 if [[ ! -f "$env_file" ]]; then echo "$env_file not found. Run: cp .env.example .env (and set POSTGRES_PASSWORD)." >&2; exit 1; fi
 # Same file Compose reads: POSTGRES_DB/USER/PASSWORD and NUSCENES_HOST_PATH.
+# DB_PORT keeps Compose's precedence: a value given by the caller wins over the env file, then the file, then 55433.
+caller_db_port="${DB_PORT:-}"
 set -a; source "$env_file"; set +a
-export PGHOST=127.0.0.1 PGPORT=55433 PGUSER="${POSTGRES_USER:-drivescene}" PGDATABASE="${POSTGRES_DB:-drivescene}"
+if [[ -n "$caller_db_port" ]]; then DB_PORT="$caller_db_port"; fi
+DB_PORT="${DB_PORT:-55433}"
+if [[ ! "$DB_PORT" =~ ^[0-9]{1,5}$ ]] || (( DB_PORT < 1 || DB_PORT > 65535 )); then echo "Invalid DB_PORT: $DB_PORT" >&2; exit 1; fi
+# Exported so the Compose readiness checks below and the Python process use the same port.
+export DB_PORT
+export PGHOST=127.0.0.1 PGPORT="$DB_PORT" PGUSER="${POSTGRES_USER:-drivescene}" PGDATABASE="${POSTGRES_DB:-drivescene}"
 export PGPASSWORD="${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in $env_file}"
 compose=(docker compose --env-file "$env_file")
 if [[ -z "$("${compose[@]}" ps --status running -q db 2>/dev/null)" ]]; then

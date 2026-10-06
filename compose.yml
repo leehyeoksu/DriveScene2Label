@@ -7,8 +7,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-drivescene}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     # Loopback only: for scripts/embed.sh, which runs on the host (venv) to use the local GPU.
+    # A second Compose project (-p) must also set DB_PORT/APP_PORT/AI_PORT; the project name alone does not move ports.
     ports:
-      - "127.0.0.1:55433:5432"
+      - "127.0.0.1:${DB_PORT:-55433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
