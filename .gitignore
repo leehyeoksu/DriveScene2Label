@@ -1,11 +1,18 @@
+# Java / Gradle build output
 HELP.md
-.gradle
+.gradle/
 build/
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
 
-### STS ###
+# Editors and local IDE settings
 .apt_generated
 .classpath
 .factorypath
@@ -13,39 +20,51 @@ build/
 .settings
 .springBeans
 .sts4-cache
-bin/
-!**/src/main/**/bin/
-!**/src/test/**/bin/
-
-### IntelliJ IDEA ###
-.idea
+.idea/
 *.iws
 *.iml
 *.ipr
-out/
-!**/src/main/**/out/
-!**/src/test/**/out/
-
-### NetBeans ###
+.vscode/
 /nbproject/private/
 /nbbuild/
 /dist/
 /nbdist/
 /.nb-gradle/
 
-### VS Code ###
-.vscode/
+# Frontend dependencies, build and test output
+node_modules/
+dist/
+dist-ssr/
+coverage/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+.vite/
+*.tsbuildinfo
 
-# Local database, secrets and Windows download metadata
+# Local configuration, DB state and credentials
 .local/
 .env
-*:Zone.Identifier
-# SSH key/known_hosts for VESPA_EXECUTOR=ssh (compose.seraph.yml)
+.env.*
+!.env.example
 /secrets/
+*.pem
+*.key
 
-# Dataset roots and generated auto-labeling results (never commit nuScenes)
+# Python environments and caches
+.venv*/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Dataset roots, uploaded originals and generated inference output
 /data/
 /datasets/
+/uploads/
 /samples/
 /sweeps/
 /maps/
@@ -54,6 +73,8 @@ out/
 /outputs/
 /out_labels/
 /#out_labels/
+/results/
+/models/
 /checkpoints/
 /weights/
 **/01_*/
@@ -64,7 +85,7 @@ out/
 **/06_*/
 **/07_*/
 
-# Sensor media, intermediate arrays, trained weights and archives
+# Sensor media, intermediate arrays and model weights
 *.jpg
 *.jpeg
 *.png
@@ -77,34 +98,25 @@ out/
 *.ckpt
 *.safetensors
 *.onnx
+*.rrd
+
+# Archives, logs and local document exports
 *.zip
 *.tar
 *.tgz
 *.gz
 *.7z
 *.log
-.env.*
-!.env.example
-__pycache__/
-*.pyc
-.DS_Store
-
-# Python venvs, local tool output
-.venv*/
+/docs/*.docx
 Claude outputs/
 graphify-out/
 
-# Small reference vectors for embed_images.py --check-reference (committed on purpose)
-!embedding/fixtures/*.npz
-
-# Generated caches, artifacts and Windows metadata
+# OS download metadata
 *Zone.Identifier
-.pytest_cache/
-.ruff_cache/
-/models/
-/results/
-*.rrd
-*.pem
-*.key
+.DS_Store
+Thumbs.db
 
-/data/
+# Deliberate small fixtures and documentation illustrations
+!embedding/fixtures/*.npz
+!/docs/images/docker-architecture.png
+!/docs/images/docker-wsl-start.png
