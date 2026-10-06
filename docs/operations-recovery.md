@@ -48,7 +48,26 @@ FAILED가 되면 재사용 index에서 빠지므로 같은 요청이 새 recordi
 
 ## 4. 다른 DB로 바뀐 경우
 
-브라우저는 `/api/system/status`의 `instanceId`가 바뀌면 캐시와 화면의 job/recording 선택을 비우고, 이전 instance의 receipt를 새 서버에 연결하지 않는다. 같은 jobId라도 다른 DB의 작업으로 보지 않는다.
+브라우저는 `/api/system/status`의 `instanceId`가 바뀌면 캐시와 화면의 job/recording 선택을 비우고, 이전 instance의 receipt를 새 서버에 연결하지 않는다. 같은 jobId라도 다른 DB의 작업으로 보지 않는다. instance 범위가 없던 v1 receipt와 이전 자동 이전이 만든 `legacy` 항목은 어느 서버에도 연결하지 않고 "확인되지 않은 이전 기록 N건"으로만 표시한다(2026-10-06, FU-02). 운영자가 수동으로 옮기는 경로도 없다. 필요한 작업은 현재 서버에서 jobId로 직접 열어 서버 문맥으로 확인한다.
+
+## 중단·재시작·늦은 응답 검증 (2026-10-06, FU-05)
+
+격리 project `ds2l-fu05`(별도 DB/volume, DB_PORT 55533, APP_PORT 18180)에서 실제 Spring image(`drivescene2label-backend`, 2026-10-05 build, backend 코드는 4adf57b 이후 변경 없음)와 **fake AI**(호스트 Python stdlib 서버, `/auto-label`·`/recordings`를 붙잡았다가 성공 또는 `VESPA_FAILED`/`RECORDING_EXPORT_FAILED`로 응답)를 사용했다. 데이터는 합성 1 scene이며 서버의 SYNTHETIC 차단을 피하려고 이 격리 DB만 origin을 UNKNOWN으로 import했다. VESPA·exporter·GPU는 실행하지 않았다. 32/32 검사 통과.
+
+|시나리오|확인한 것|
+|---|---|
+|S1 job: AI 응답 대기 중 운영자 조건부 FAILED → 늦은 성공|FAILED·운영자 사유 유지, predicted_annotation·artifact 0건|
+|S2 job: 운영자 FAILED 후 늦은 `VESPA_FAILED`|사유·error_code(NULL) 덮어쓰지 않음|
+|S3 job: 호출 중 backend `docker kill` → 재시작|RUNNING 유지(자동 실패·재claim 없음), AI 재호출 0회, 같은 Idempotency-Key는 같은 job 반환, 운영자 FAILED 후에도 같은 key는 FAILED job 반환, 새 key는 새 job COMPLETED, 이전 job 불변|
+|S4 recording: 운영자 FAILED 후 늦은 파일 응답|FAILED·contentUrl 없음, content 409/404, 같은 요청은 새 recording(202) READY, content는 새 파일, job 생성 0|
+|S5 recording(예측 포함): export 중 backend kill → 재시작|RUNNING 유지, exporter 재호출 0, 같은 요청은 RUNNING 재사용(200), 운영자 FAILED 후 새 recording READY, job 행 불변|
+|S6 recording: 운영자 FAILED 후 늦은 `RECORDING_EXPORT_FAILED`|사유·error_code 유지|
+
+확인된 운영상 한계(설계 그대로, 후속 항목):
+
+- backend가 재시작되면 이전 실행의 RUNNING 행은 운영자가 정리할 때까지 RUNNING으로 남는다(lease 없음). 화면은 계속 "실행 중"으로 보인다.
+- 운영자 정리 뒤 도착한 늦은 recording 응답이 쓴 `.rrd` 파일은 DB에 연결되지 않고 recording root에 남는다(`<recordingId>-<executionToken>/`). 자동 정리하지 않으므로 용량 점검 때 DB에 없는 폴더를 확인한다.
+- 실제 Seraph(SSH/Slurm) 잔존 job 실험은 접속 정보(D-02/D-03)가 없어 미실행.
 
 ## 후속 (이번 범위 아님)
 

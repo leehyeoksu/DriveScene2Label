@@ -8,6 +8,8 @@
 
 실제 업데이트를 시작하거나 중단 후 이어갈 때는 [Claude Code 업데이트·재개 프롬프트](docs/claude-code-integration-prompt.md)를 사용한다. 프롬프트 작성 요청 자체는 프로그램 구현 착수와 구분한다.
 
+2026-10-06 이후의 현재 재개 기준은 [I1/I2 보완·후속 검증 프롬프트](docs/claude-code-integration-followup-prompt.md)다. [검토 문서](docs/frontend-integration-audit-2026-10-06.md)의 상태 조회 실패 후 이전 READY 사용과 구버전 receipt DB 귀속 문제를 먼저 보완하고 체크리스트 FU-01~08을 따라 진행한다. I0 main 병합과 기존 앱 구현을 반복하지 않는다.
+
 1. [프론트 개발 기획서](docs/frontend-product-plan.md): 화면·기능·상태·개발 범위.
 2. [구현 체크리스트](docs/frontend-implementation-checklist.md): 진행 상태·완료 조건·검증 기록.
 3. [실제 REST 계약](README_API.md): 기존 Spring 요청/응답·오류.

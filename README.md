@@ -16,6 +16,8 @@ nuScenes 기반 **3D Auto-Labeling + 자연어 Scene Retrieval** 백엔드입니
 - [실제 데이터·프론트 연동 개선 기획서](docs/frontend-integration-plan.md)
 - [개선 구현·실제 성공 검증 체크리스트](docs/frontend-integration-checklist.md)
 - [Claude Code 연동 업데이트 프롬프트](docs/claude-code-integration-prompt.md)
+- [I1/I2 구현 검토 (2026-10-06)](docs/frontend-integration-audit-2026-10-06.md)
+- [Claude Code I1/I2 보완·후속 검증 프롬프트](docs/claude-code-integration-followup-prompt.md)
 
 React 프론트는 [`frontend/`](frontend/README.md)에 있습니다(씬 탐색·검색, 6카메라 작업대, 이미지 위 GT/예측 투영, VESPA 작업, 두 씬 비교, Rerun 3D). 디자인 기준은 `docs/frontend-design/`, 저장소 개발 지침은 [CLAUDE.md](CLAUDE.md), 진행·검증 상태는 [구현 체크리스트](docs/frontend-implementation-checklist.md)를 따릅니다. 실제 nuScenes mini·GPU 환경에서의 통합 확인 범위는 체크리스트의 검증 기록에 따로 적습니다.
 
@@ -151,7 +153,9 @@ DB healthy 후 backend가 기동합니다(2026-10-05부터 AI는 시작만 기�
 |---|---|---|---|
 |backend|127.0.0.1:8080|backend:8080|GET /api/datasets (DB 조회 포함)|
 |ai-server|127.0.0.1:8000|ai-server:8000|GET /health|
-|db|127.0.0.1:55433|db:5432|pg_isready|
+|db|127.0.0.1:55433 (`DB_PORT`)|db:5432|pg_isready|
+
+backend·ai-server·db 호스트 포트는 각각 `APP_PORT`·`AI_PORT`·`DB_PORT`(기본 8080·8000·55433)입니다. 같은 PC에서 두 번째 Compose project(`-p` 또는 `COMPOSE_PROJECT_NAME`)를 띄울 때는 세 값을 모두 바꿔야 합니다. project 이름만 바꾸면 volume은 분리되지만 포트는 충돌합니다. `docker compose up -d db backend`는 `depends_on` 때문에 제품 ai-server도 build·시작합니다. AI 없이(또는 recording 전용 하네스로) 띄우려면 `--no-deps`와 override 파일을 함께 사용합니다. 예와 검증 기록은 [Docker 통합](docs/docker-integration.md#별도-compose-project-포트-분리-2026-10-06)에 있습니다. `scripts/embed.sh`도 같은 우선순위(실행 시 `DB_PORT` → `ENV_FILE`의 값 → 55433)를 따르므로, 별도 project에서는 Compose와 같은 env 파일을 `ENV_FILE=<파일>`로 지정합니다.
 
 |volume/mount|사용 서비스|내용|
 |---|---|---|
@@ -256,7 +260,7 @@ python3 scripts/docker-smoke.py --auto-label
 
 ## 13. Troubleshooting
 
-- **DB 연결 실패**: docker compose ps/logs db. 컨테이너는 db:5432, 호스트는55433. 기존 volume의 DB password는 .env 변경만으로 바뀌지 않습니다.
+- **DB 연결 실패**: docker compose ps/logs db. 컨테이너는 db:5432, 호스트는 `DB_PORT`(기본 55433). 기존 volume의 DB password는 .env 변경만으로 바뀌지 않습니다.
 - **nuScenes path 오류**: host root 존재 여부, samples/sweeps/maps/version 디렉터리 확인. bind는 없는 폴더를 자동 생성하지 않습니다.
 - **CLIP 다운로드 실패**: logs ai-server에서 외부 네트워크/Hugging Face 연결 확인. model_cache를 무작정 삭제하지 마세요.
 - **CUDA unavailable**: GPU overlay를 사용했는지, Docker NVIDIA 지원과 드라이버 확인. CPU fallback은 정상이나 느립니다.

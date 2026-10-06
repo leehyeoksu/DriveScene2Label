@@ -2,6 +2,8 @@
 
 작성일: 2026-10-05. 기존 React·Spring·AI 구현을 개선 기획서에 따라 업데이트하는 실행용 프롬프트다. 최초 구축용 프롬프트와 구분한다.
 
+> 2026-10-06 현재 I0 통합과 I1/I2 기본 구현은 완료됐다. 검토에서 발견한 두 문제 수정과 다음 검증은 [I1/I2 보완·후속 검증 프롬프트](claude-code-integration-followup-prompt.md)를 사용한다. 아래 전체 시작 프롬프트로 완료한 main 병합과 구현을 반복하지 않는다.
+
 대상 저장소: /Users/jeonwoojin/Documents/ChatGPT/캡스톤/DriveScene2Label. 상위 캡스톤 폴더도 별도 Git 저장소이므로 실제 코드 저장소 루트를 확인한다.
 
 기준 문서: [개선 기획서](frontend-integration-plan.md), [개선 체크리스트](frontend-integration-checklist.md), [근거 분석](frontend-integration-review.md). 아래 프롬프트를 Claude Code에 전달하면 문서 준비 다음 단계인 실제 구현을 요청하는 것으로 사용한다. 이 파일 작성 자체로 앱 수정·merge·실제 추론이 수행된 것은 아니다.
