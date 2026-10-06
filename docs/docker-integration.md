@@ -5,7 +5,7 @@
 - 추가: `ai-server/Dockerfile`, `ai-server/requirements-vespa.txt`, `compose.gpu.yml`, `scripts/docker-smoke.py`.
 - 변경: `Dockerfile`, `compose.yml`, `.env.example`, `.gitignore`, `.dockerignore`, `.gitattributes`, `README.md`, `README_API.md`, VESPA runner 호환 처리.
 - 서비스: db(PostgreSQL16+pgvector), backend(Spring), ai-server(FastAPI/CLIP/VESPA).
-- 포트: backend8080, AI8000, DB55433. 호스트 loopback만 bind.
+- 포트: backend8080(`APP_PORT`), AI8000(`AI_PORT`), DB55433(`DB_PORT`, 2026-10-06부터 변경 가능). 호스트 loopback만 bind.
 - volume: postgres_data(DB), model_cache(`/models`), vespa_results(`/results`), 공통 dataset read-only bind(`/data/nuscenes`). Spring에 results volume은 필요하지 않음.
 - 환경: `.env.example` 참조. 실제 .env/비밀번호는 commit하지 않음. 내부 주소는 db:5432, ai-server:8000.
 - CPU: 기본 compose에서 자동 사용. GPU: compose.gpu.yml overlay로 NVIDIA 장치 할당.
@@ -72,3 +72,37 @@ RUNNING job crash recovery/lease, 취소 API, 결과 pagination, artifact downlo
 검증 방식: 첫 실계산에서 지면 제거382 sweep(약2분55초), GroundingDINO/SAM 분할(약28분), LiDAR 재투영까지 계산했다. NumPy concat 호환 오류를 수정한 재실행은 그 캐시를 재사용하고 DINOv2/병합/속도 추정을 실제 계산했다. atan2 호환 오류 수정 후 최종 재실행은 이전 실행의 원본 단계 캐시를 재사용하여 방향/박스/JSON 생성과 Spring 저장을 검증했다. 최종 job4의 약31초는 캐시 재사용 시간이며 처음부터의 전체 처리시간이 아니다. 캐시 복사 launcher와 Compose override는 격리된 검증 환경에만 적용했고 Git에 포함하지 않는다. 원본 데이터/알고리즘을 줄이거나 mock box를 사용하지 않았다.
 
 Spring 통합 테스트17개, AI API/wrapper 테스트17개 통과. 1class/3class는 wrapper 테스트로 확인했으며 실제 전체 scene 실행은8class만 확인했다. full mini 전체 scene 및 detection/retrieval 품질 평가는 별도 작업이다.
+
+## 별도 Compose project 포트 분리 (2026-10-06)
+
+실제 데이터 검증용 project를 기존 테스트 project와 함께 띄울 때 사용한다. 서로 다른 project 이름은 container·network·volume(`<project>_postgres_data` 등)을 분리하지만, 호스트 포트는 `APP_PORT`·`AI_PORT`·`DB_PORT`로 따로 바꿔야 한다. 이전 `compose.yml`은 DB 포트가 55433으로 고정되어 project 이름이나 APP_PORT만 바꾸면 두 번째 db가 포트 충돌로 시작하지 못했다.
+
+```bash
+# 예: 실제 mini 원본 검증용 project (경로·origin은 실제 제공된 값으로. 추정 금지)
+export COMPOSE_PROJECT_NAME=ds2l-actual APP_PORT=18080 AI_PORT=18001 DB_PORT=55434   # 사용 중인 포트는 lsof -nP -iTCP -sTCP:LISTEN 으로 먼저 확인
+export NUSCENES_HOST_PATH=<제공된 mini root> NUSCENES_DATA_ORIGIN=NUSCENES NUSCENES_IMPORT_ENABLED=true
+docker compose --env-file .env config --format json | python3 -c 'import json,sys; c=json.load(sys.stdin); print({n:[p["published"] for p in s.get("ports",[])] for n,s in c["services"].items()})'
+docker compose --env-file .env up -d db backend          # 제품 ai-server도 build·시작된다 (depends_on)
+# 제품 AI 없이: docker compose --env-file .env -f compose.yml -f <override> up -d db && ... up -d --no-deps backend
+```
+
+- 임베딩(`scripts/embed.sh`)도 같은 project/DB를 가리켜야 한다. 실제 데이터용 project는 전용 env 파일(예: git-ignore된 `.env.actual`에 `COMPOSE_PROJECT_NAME`, `DB_PORT`, `NUSCENES_HOST_PATH`, `NUSCENES_DATA_ORIGIN`, DB 자격 증명)을 두고 Compose와 embed를 같은 파일로 실행한다: `docker compose --env-file .env.actual up -d db backend`, `ENV_FILE=.env.actual bash scripts/embed.sh`. embed.sh의 DB 포트 우선순위는 Compose와 같다(호출 시 `DB_PORT` → env 파일 `DB_PORT` → 55433, 2026-10-06 수정. 이전에는 env 파일 값이 호출 값을 덮어썼다). 데이터 root는 `NUSCENES_ROOT` → env 파일의 `NUSCENES_HOST_PATH` 순서이며 env 파일 값이 shell 값을 덮어쓰므로, 다른 원본을 쓰려면 env 파일에 적는다. 회귀 검사: `bash scripts/tests/embed-db-port.sh`(stub만 사용, DB·Docker·모델 접속 없음).
+- shell 환경변수가 `.env` 값보다 우선한다. `docker compose config` 출력에는 DB 비밀번호가 포함되므로 그대로 공유·기록하지 않고 위처럼 필요한 필드만 본다.
+- `depends_on`을 override로 바꾸려면 Compose의 `!override`/`!reset` 태그를 쓴다(확인: Docker Compose v5.0.2). 목록 병합 규칙 때문에 일반 override로는 기존 `ports`·`volumes` 항목을 제거할 수 없다.
+- 기존 project의 volume은 지우거나 재생성하지 않는다. project를 정리할 때도 `down -v`는 해당 project 소유 volume만 지우므로 project 이름을 반드시 확인한다.
+
+검증(2026-10-06, macOS arm64, Docker Desktop, Compose v5.0.2):
+
+|검사|결과|
+|---|---|
+|`docker compose -p <새 이름> --dry-run up -d db backend`(override 없음)|`ai-server` image build와 container 생성이 포함됨 → 제품 AI가 함께 시작됨을 확인|
+|recording 전용 override + `--no-deps` dry-run|db·backend만 생성|
+|기존 project(55433/8080) 실행 중 `ds2l-fu05` project를 DB_PORT=55533, APP_PORT=18180으로 실행|두 db·backend 동시 healthy, 기존 container·volume 변경 없음|
+|DB 포트 고정값 재사용(55433) bind 시도|`driver failed programming external connectivity` (충돌 재현)|
+
+## Apple Silicon(arm64)에서 AI image build 제약 (2026-10-06)
+
+- 확인 환경: macOS arm64, Docker Desktop 29.2(linux/arm64 VM). 제품 `ai-server/Dockerfile`은 그대로 build할 수 없다. VESPA venv의 `open3d==0.19.0`에 linux/aarch64 cp312 wheel이 없다(`Could not find a version that satisfies the requirement open3d==0.19.0 (from versions: 0.20.0)`).
+- base 계층(`requirements.txt`)은 arm64에서도 설치되지만 PyPI torch 2.14.1 aarch64가 CUDA 13 `nvidia-*` wheel(cudnn 651MB, cublas 543MB 등 약 2.5GB 이상)을 함께 받는다. 느린 회선에서는 pip 기본 timeout(15초)으로 중간 실패할 수 있어 시험 때는 `PIP_DEFAULT_TIMEOUT=300`을 추가했다.
+- FU-04 시험 변형(제품 파일 미수정): VESPA venv만 `open3d==0.20.0`, apt `libgfortran5 libegl1` 추가 → 원본 VESPA import·rerun 버전 검사 통과(image 13.9GB). 이 변형은 CLIP 실패 격리·exporter 확인용이며 VESPA 실행 결과의 기준 환경이 아니다.
+- 제품 기준 platform은 기존 검증대로 linux/amd64(Docker Desktop + WSL2, NVIDIA)다. `--platform linux/amd64` emulation build와 arm64용 의존성 분기 추가는 실행·결정하지 않았다(VESPA 결과 재현성 확인 필요).

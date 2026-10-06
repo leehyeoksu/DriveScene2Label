@@ -6,12 +6,26 @@ nuScenes 기반 **3D Auto-Labeling + 자연어 Scene Retrieval** 백엔드입니
 - [DB / VESPA 결과 스키마](docs/auto-label-result-schema.md)
 - [통합 검증 및 테스트 범위](docs/integration-verification.md)
 - [Docker 검증 결과와 배포 제약](docs/docker-integration.md)
+- [프론트엔드 개발 기획서](docs/frontend-product-plan.md)
+- [프론트 구현 체크리스트](docs/frontend-implementation-checklist.md)
+- [Claude Code 구현 시작 프롬프트](docs/claude-code-frontend-prompt.md)
+- [Rerun recording 계약](docs/rerun-recording.md)
+- [프론트 실행·구조](frontend/README.md)
+- [실제 데이터·프론트 연동 개선 기획서](docs/frontend-integration-plan.md) / [개선 체크리스트](docs/frontend-integration-checklist.md)
+- [작업·recording 운영 복구 절차](docs/operations-recovery.md)
+- [실제 데이터·프론트 연동 개선 기획서](docs/frontend-integration-plan.md)
+- [개선 구현·실제 성공 검증 체크리스트](docs/frontend-integration-checklist.md)
+- [Claude Code 연동 업데이트 프롬프트](docs/claude-code-integration-prompt.md)
+- [I1/I2 구현 검토 (2026-10-06)](docs/frontend-integration-audit-2026-10-06.md)
+- [Claude Code I1/I2 보완·후속 검증 프롬프트](docs/claude-code-integration-followup-prompt.md)
+
+React 프론트는 [`frontend/`](frontend/README.md)에 있습니다(씬 탐색·검색, 6카메라 작업대, 이미지 위 GT/예측 투영, VESPA 작업, 두 씬 비교, Rerun 3D). 디자인 기준은 `docs/frontend-design/`, 저장소 개발 지침은 [CLAUDE.md](CLAUDE.md), 진행·검증 상태는 [구현 체크리스트](docs/frontend-implementation-checklist.md)를 따릅니다. 실제 nuScenes mini·GPU 환경에서의 통합 확인 범위는 체크리스트의 검증 기록에 따로 적습니다.
 
 ## 1. Architecture
 
 ```mermaid
 flowchart TD
- F[Frontend - 별도 프로젝트] --> C[Spring REST Controller]
+ F[React frontend - frontend/] --> C[Spring REST Controller]
  C --> S[Spring Service / Job Worker]
  S --> R[Repository]
  R --> DB[(PostgreSQL 16 + pgvector)]
@@ -97,6 +111,7 @@ cp .env.example .env
 |NUSCENES_HOST_PATH|필수, 호스트의 dataset root 절대 경로|
 |NUSCENES_VERSION|v1.0-mini; Spring과 VESPA에 동일 적용|
 |NUSCENES_IMPORT_ENABLED|example=true, compose 기본false|
+|NUSCENES_DATA_ORIGIN|UNKNOWN. import checksum과 함께 기록할 출처: 공식 원본이면 `NUSCENES`, 테스트 fixture면 `SYNTHETIC`. 이름·버전으로 추정하지 않으며 SYNTHETIC이면 VESPA 실행을 막는다|
 |APP_PORT / AI_PORT|8080 / 8000, host loopback에만 공개|
 |VESPA_NUM_THREADS|1, VESPA subprocess의 BLAS/OMP 스레드 수. CLIP 설정과 독립|
 |VESPA_TIMEOUT_SECONDS|7200초 subprocess 상한|
@@ -104,8 +119,11 @@ cp .env.example .env
 |AI_SERVER_READ_TIMEOUT|30s, CPU CLIP 처리에 더 필요한 경우 조정|
 |AUTO_LABEL_READ_TIMEOUT|7300s, VESPA timeout보다 길게|
 |AUTO_LABEL_WORKER_ENABLED|true, Spring DB polling worker|
+|RECORDING_TIMEOUT_SECONDS|600초, Rerun exporter subprocess 상한(ai-server)|
+|RECORDING_READ_TIMEOUT|660s, Spring의 `POST /recordings` 대기. exporter 상한 이상으로|
+|RECORDING_WORKER_ENABLED|true, Spring recording worker|
 
-컨테이너 내부 고정 경로/주소: Spring DB_URL=`jdbc:postgresql://db:5432/<db>`, AI_SERVER_BASE_URL=`http://ai-server:8000`, NUSCENES_ROOT=`/data/nuscenes`, VESPA_ROOT=`/opt/vespa`, VESPA_OUTPUT_ROOT=`/results`, HF_HOME=`/models/huggingface`, TORCH_HOME=`/models/torch`. 호스트 localhost를 컨테이너 간 주소로 사용하지 않습니다.
+컨테이너 내부 고정 경로/주소: Spring DB_URL=`jdbc:postgresql://db:5432/<db>`, AI_SERVER_BASE_URL=`http://ai-server:8000`, NUSCENES_ROOT=`/data/nuscenes`, VESPA_ROOT=`/opt/vespa`, VESPA_OUTPUT_ROOT=`/results`, RECORDING_OUTPUT_ROOT(ai-server)/RECORDING_ROOT(backend)=`/recordings`, HF_HOME=`/models/huggingface`, TORCH_HOME=`/models/torch`. 호스트 localhost를 컨테이너 간 주소로 사용하지 않습니다.
 
 ## 7. Quick Start
 
@@ -125,7 +143,7 @@ docker compose logs -f ai-server backend
 docker compose -f compose.yml -f compose.gpu.yml up --build -d
 ```
 
-DB healthy 및 AI healthy 후 backend가 기동합니다. CLIP 최초 다운로드 동안 AI health는 아직 응답하지 않으며 backend는 대기합니다. health start period는15분입니다. 모델/네트워크가 준비되지 않으면 이 명령이 모든 기능의 readiness를 보장하지 않습니다. 준비 완료 후에는 컨테이너 재시작으로 모델을 매번 다운로드하지 않습니다.
+DB healthy 후 backend가 기동합니다(2026-10-05부터 AI는 시작만 기다리고 health를 기다리지 않음). CLIP 다운로드·로딩 중에도 씬 목록·카메라·GT는 쓸 수 있고, 검색/VESPA/recording 준비 여부는 `GET /api/system/status`로 확인합니다. CLIP 로딩이 실패해도 AI 서버는 recording/VESPA를 계속 제공하며 `/health`는 503입니다(이전 fail-fast는 `AI_REQUIRE_CLIP=true`). AI health start period는15분입니다. 모델/네트워크가 준비되지 않으면 이 명령이 모든 기능의 readiness를 보장하지 않습니다. 준비 완료 후에는 컨테이너 재시작으로 모델을 매번 다운로드하지 않습니다.
 
 기존 compose의 서비스명 `app`은 `backend`로 바뀌었습니다. 이전 app 컨테이너가 떠 있다면 현재 포트를 비운 뒤 실행하세요. 기존 `postgres_data` volume 이름은 유지하며 자동 삭제하지 않습니다.
 
@@ -135,13 +153,16 @@ DB healthy 및 AI healthy 후 backend가 기동합니다. CLIP 최초 다운로�
 |---|---|---|---|
 |backend|127.0.0.1:8080|backend:8080|GET /api/datasets (DB 조회 포함)|
 |ai-server|127.0.0.1:8000|ai-server:8000|GET /health|
-|db|127.0.0.1:55433|db:5432|pg_isready|
+|db|127.0.0.1:55433 (`DB_PORT`)|db:5432|pg_isready|
+
+backend·ai-server·db 호스트 포트는 각각 `APP_PORT`·`AI_PORT`·`DB_PORT`(기본 8080·8000·55433)입니다. 같은 PC에서 두 번째 Compose project(`-p` 또는 `COMPOSE_PROJECT_NAME`)를 띄울 때는 세 값을 모두 바꿔야 합니다. project 이름만 바꾸면 volume은 분리되지만 포트는 충돌합니다. `docker compose up -d db backend`는 `depends_on` 때문에 제품 ai-server도 build·시작합니다. AI 없이(또는 recording 전용 하네스로) 띄우려면 `--no-deps`와 override 파일을 함께 사용합니다. 예와 검증 기록은 [Docker 통합](docs/docker-integration.md#별도-compose-project-포트-분리-2026-10-06)에 있습니다. `scripts/embed.sh`도 같은 우선순위(실행 시 `DB_PORT` → `ENV_FILE`의 값 → 55433)를 따르므로, 별도 project에서는 Compose와 같은 env 파일을 `ENV_FILE=<파일>`로 지정합니다.
 
 |volume/mount|사용 서비스|내용|
 |---|---|---|
 |postgres_data|db|PostgreSQL persistent data|
 |model_cache → /models|ai-server|CLIP/Hugging Face/torch hub caches|
 |vespa_results → /results|ai-server|run별 최종 JSON, 로그, intermediate NPZ|
+|rerun_recordings → /recordings|ai-server(rw), backend(ro)|recording별 `.rrd`, 요청 JSON, exporter 로그|
 |dataset bind → /data/nuscenes:ro|backend, ai-server|동일 원본 센서/metadata 파일|
 
 Spring은 최종 결과를 HTTP JSON으로 받으므로 `/results`를 공유하지 않습니다. DB에는 artifact storageKey/relativePath만 저장합니다. artifact download API는 아직 없습니다.
@@ -160,6 +181,8 @@ AI health의 `vespa=configured`는 파일 경로 점검이며 모델 다운로�
 자연어 검색: camera image → Spring → FastAPI CLIP image → 768-d L2 vector → image_embedding. text → Spring → CLIP text → pgvector cosine distance `<=>` → scene별 TOP_K_AVERAGE → Scene 목록.
 
 Auto-label: scene 선택 → Spring job PENDING → worker RUNNING → FastAPI subprocess → VESPA final JSON → Spring 검증 → predicted_annotation + artifact + job COMPLETED atomic commit. 저장 오류는 rollback 후 FAILED. 프론트엔드는 job REST polling을 사용합니다.
+
+Rerun recording: Spring이 keyframe sample·LIDAR_TOP pose/calibration·GT·(선택) 완료 job 예측을 FastAPI `POST /recordings`로 보냄 → exporter subprocess(rerun-sdk 0.38.1)가 `/recordings/<id>-<token>/<scene>.rrd` 생성 → Spring 검증 후 READY, 브라우저는 Spring content API로 받아 Web Viewer 0.38.1에 연다. recording 실패는 VESPA job을 다시 실행하지 않는다. 계약은 [Rerun recording](docs/rerun-recording.md), exporter는 [RECORDING.md](ai-server/RECORDING.md).
 
 ## 10. API
 
@@ -188,6 +211,16 @@ auto_label_job → auto_label_job_sample → predicted_annotation
 Flyway V1 catalog, V2 pgvector, V3 scene flags, V4 auto-label을 startup 시 적용합니다. 이미 배포된 migration을 수정하지 말고 새 migration을 추가하세요. GT와 pseudo-label 모두 world 좌표, sizeWLH, quaternionWXYZ. VESPA score1.0은 고정값입니다.
 
 ## 12. Development / Tests
+
+프론트 (Node 20.19+ / npm, 상세는 [frontend/README.md](frontend/README.md)):
+
+```bash
+cd frontend && npm ci
+API_PROXY_TARGET=http://127.0.0.1:8080 npm run dev   # /api 를 Spring으로 proxy
+npm run typecheck && npm test && npm run build
+npm run test:e2e                                       # route fixture 기반 UI 흐름 (실제 서버 연동 아님)
+DS2L_API=http://127.0.0.1:8080 npx playwright test -c playwright.live.config.ts   # 실행 중인 Spring 대상
+```
 
 Spring 단독 (JDK21):
 
@@ -227,7 +260,7 @@ python3 scripts/docker-smoke.py --auto-label
 
 ## 13. Troubleshooting
 
-- **DB 연결 실패**: docker compose ps/logs db. 컨테이너는 db:5432, 호스트는55433. 기존 volume의 DB password는 .env 변경만으로 바뀌지 않습니다.
+- **DB 연결 실패**: docker compose ps/logs db. 컨테이너는 db:5432, 호스트는 `DB_PORT`(기본 55433). 기존 volume의 DB password는 .env 변경만으로 바뀌지 않습니다.
 - **nuScenes path 오류**: host root 존재 여부, samples/sweeps/maps/version 디렉터리 확인. bind는 없는 폴더를 자동 생성하지 않습니다.
 - **CLIP 다운로드 실패**: logs ai-server에서 외부 네트워크/Hugging Face 연결 확인. model_cache를 무작정 삭제하지 마세요.
 - **CUDA unavailable**: GPU overlay를 사용했는지, Docker NVIDIA 지원과 드라이버 확인. CPU fallback은 정상이나 느립니다.
@@ -243,9 +276,9 @@ python3 scripts/docker-smoke.py --auto-label
 docker compose down
 ```
 
-컨테이너/network만 제거하며 DB/model cache/results는 유지됩니다. GPU 실행 시 동일한 `-f compose.yml -f compose.gpu.yml` 조합을 사용합니다.
+컨테이너/network만 제거하며 DB/model cache/results/recordings는 유지됩니다. GPU 실행 시 동일한 `-f compose.yml -f compose.gpu.yml` 조합을 사용합니다.
 
-**아래 명령은 DB 데이터·모델 캐시·VESPA 결과 볼륨까지 삭제합니다. 백업 없이 실행하지 마세요.** dataset bind의 원본 파일은 삭제하지 않습니다.
+**아래 명령은 DB 데이터·모델 캐시·VESPA 결과·Rerun recording 볼륨까지 삭제합니다. 백업 없이 실행하지 마세요.** dataset bind의 원본 파일은 삭제하지 않습니다.
 
 ```bash
 docker compose down -v

@@ -73,7 +73,9 @@ def test_shared_crop_math():
     assert [c.size for c in clip_core.square_crops(image)]==[(900,900),(900,900)]
 
 
-def test_startup_failure():
+def test_startup_failure(monkeypatch):
+    # Strict mode keeps the original fail-fast startup; the default (non-fatal) path is in test_capabilities.py.
+    monkeypatch.setenv("AI_REQUIRE_CLIP","true")
     with patch.object(clip_core,"load_model",side_effect=RuntimeError("weights unavailable")):
         with pytest.raises(RuntimeError,match="weights unavailable"):
             with TestClient(app):

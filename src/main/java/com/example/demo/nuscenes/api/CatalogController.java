@@ -1,6 +1,7 @@
 package com.example.demo.nuscenes.api;
 
 import com.example.demo.nuscenes.domain.*;
+import com.example.demo.nuscenes.dto.GtAnnotationView;
 import com.example.demo.nuscenes.repository.*;
 import java.util.*;
 import org.springframework.http.HttpStatus;
@@ -14,10 +15,10 @@ public class CatalogController {
  private final DatasetRepository datasets;
  private final SceneRepository scenes;
  private final SampleRepository samples;
- private final GtAnnotationRepository annotations;
+ private final GtAnnotationViewRepository annotations;
  private final JdbcClient jdbc;
  public CatalogController(DatasetRepository datasets, SceneRepository scenes, SampleRepository samples,
-   GtAnnotationRepository annotations, JdbcClient jdbc) {
+   GtAnnotationViewRepository annotations, JdbcClient jdbc) {
   this.datasets=datasets; this.scenes=scenes; this.samples=samples; this.annotations=annotations; this.jdbc=jdbc;
  }
  @GetMapping("/datasets") public List<Dataset> datasets() { return datasets.listAll(); }
@@ -72,9 +73,9 @@ public class CatalogController {
    """).param("dataset",sample.datasetId()).param("scene",sample.sceneToken()).query(MapView.class).list();
   return new SampleDetail(sample,files,maps);
  }
- @GetMapping("/samples/{id}/annotations") public List<GtAnnotation> annotations(@PathVariable long id) {
+ @GetMapping("/samples/{id}/annotations") public List<GtAnnotationView> annotations(@PathVariable long id) {
   Sample sample=samples.findById(id).orElseThrow(CatalogController::notFound);
-  return annotations.listBySample(sample.datasetId(),sample.token());
+  return annotations.bySample(sample.datasetId(),sample.token());
  }
  @GetMapping("/datasets/{id}/categories") public List<Category> categories(@PathVariable long id) {
   datasets.findById(id).orElseThrow(CatalogController::notFound);

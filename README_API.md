@@ -1,6 +1,7 @@
 # DriveScene2Label Backend API Specification
 
-검증 기준: 2026-10-03, origin/main `ffb6dc8` 위 로컬 통합 변경. 프론트엔드 변경 없음. Docker 통합과 함께 제공하는 REST 계약이다.
+검증 기준: 2026-10-03, origin/main `ffb6dc8` 위 로컬 통합 변경. Docker 통합과 함께 제공하는 REST 계약이다.
+2026-10-04 `codex/frontend-implementation`: GT category 필드, job status 문맥 필드, Rerun recording API(9장) 추가. 기존 필드는 유지한다.
 
 ## 1. 서버 구성
 
@@ -63,11 +64,11 @@
 - Sample: `id,datasetId,timestampUs` 숫자; `token,sceneToken,prevToken,nextToken` 문자열. 연결 토큰은 없을 수 있다.
 - SensorFile: `id,token,channel,modality,relativePath,timestampUs,isKeyFrame,width,height,egoPoseToken,calibratedSensorToken,vehicleX,vehicleY,vehicleZ,contentUrl`. `isKeyFrame` boolean, ID/시간/크기/좌표 numeric, 나머지 string. vehicleXYZ는 해당 센서 시간의 ego world 위치다.
 - MapView: `id:number,token:string,relativePath:string,location:string,contentUrl:string`.
-- GtAnnotation: `id,datasetId,token,sampleToken,instanceToken,visibilityToken,centerX,centerY,centerZ,sizeW,sizeL,sizeH,rotationW,rotationX,rotationY,rotationZ,numLidarPts,numRadarPts,prevToken,nextToken`. ID/box/point count numeric, token string. 일부 관계값 nullable.
+- GtAnnotation: `id,datasetId,token,sampleToken,instanceToken,visibilityToken,centerX,centerY,centerZ,sizeW,sizeL,sizeH,rotationW,rotationX,rotationY,rotationZ,numLidarPts,numRadarPts,prevToken,nextToken,categoryToken,categoryName`. ID/box/point count numeric, token string. 일부 관계값 nullable. `categoryToken/categoryName`은 같은 dataset의 object_instance→category JOIN 결과이며 연결이 없으면 null.
 - CalibratedSensor: `id,datasetId,token,sensorToken,translationX/Y/Z,rotationW/X/Y/Z,intrinsic00/01/02/10/11/12/20/21/22` (슬래시는 실제 JSON 필드 각각을 뜻함). 카메라 외 intrinsic은 null 가능. sensor→ego 변환.
 - EgoPose: `id,datasetId,token,timestampUs,translationX/Y/Z,rotationW/X/Y/Z`. ego→world 변환.
 
-GT/예측 모두 world 중심 좌표, size W,L,H, quaternion W,X,Y,Z. GT API에는 class 이름이 아직 포함되지 않는다. DB의 object_instance→category JOIN으로 대응할 수 있으나 현재 REST에서 instance→category 조회는 제공하지 않는다. GT 비교는 datasetId+sampleToken으로 같은 프레임을 찾은 뒤 공간적으로 매칭해야 하며 box끼리 일대일 FK는 없다.
+GT/예측 모두 world 중심 좌표, size W,L,H, quaternion W,X,Y,Z. GT `categoryName`은 nuScenes 원본 이름(`vehicle.car` 등)이며 서버가 vehicle/car 등으로 바꾸지 않는다. classMode별 표시 분류 매핑은 클라이언트가 하고 미매핑은 그대로 표시한다. 순서는 `token` 오름차순. GT 비교는 datasetId+sampleToken으로 같은 프레임을 찾은 뒤 공간적으로 매칭해야 하며 box끼리 일대일 FK는 없다.
 
 파일 응답은 JPEG/PNG에 대응 MIME, 그 외 `application/octet-stream`, `Content-Length`, `X-Content-Type-Options: nosniff`를 사용한다. 반환된 contentUrl은 Spring 기준 상대 URL이다.
 
@@ -132,15 +133,19 @@ sceneToken/classMode 필수, datasetId 선택 양수. 동일 token이 여러 dat
 ```
 
 같은 dataset/Idempotency-Key/scene/classMode 재요청은 기존 job을 반환하며 status가 이미 COMPLETED/FAILED일 수도 있다. 키 생략은 매번 새 job. 같은 키로 다른 scene/classMode는409. 실패 작업 재실행은 새 키 사용.
-400 classMode/버전/빈 scene 오류,404 scene 없음,409 token 모호/키 충돌,503 DB 오류.
+처리 순서(2026-10-05): ① target 확인과 같은 key의 기존 job 재조회(AI 장애 중에도 응답) ② **새 job일 때만** transaction 밖에서 VESPA 준비 검사(`/api/system/status`의 vespa와 같은 판정, CONFIGURED/UNKNOWN이면 읽기 전용 재확인 1회) ③ insert. 준비되지 않았으면 job을 만들지 않고 `503 {"code":"<reasonCode>","message":"..."}`(예: `VESPA_NOT_CONFIGURED`, `EXECUTOR_NOT_CHECKED`, `SYNTHETIC_DATASET`, `DATASET_MISMATCH`, `AI_UNREACHABLE`, `AI_ENDPOINT_UNSUPPORTED`).
+400 classMode/버전/빈 scene 오류,404 scene 없음,409 token 모호/키 충돌,503 준비 안 됨(code는 위) 또는 DB 오류.
 
 `GET /api/auto-label/jobs/{id}` — job 숫자 ID, query/body 없음. 200:
 
 ```json
-{"jobId":12,"datasetId":1,"status":"RUNNING","errorMessage":null,"createdAt":"2026-10-03T12:00:00Z","startedAt":"2026-10-03T12:00:01Z","completedAt":null}
+{"jobId":12,"datasetId":1,"status":"RUNNING","errorMessage":null,"createdAt":"2026-10-03T12:00:00Z","startedAt":"2026-10-03T12:00:01Z","completedAt":null,
+ "sceneToken":"scene-token","sceneId":7,"sceneName":"scene-0061","classMode":8,"mappingName":"8class","errorCode":null}
 ```
 
+`sceneToken`은 job 생성 시 대상(`requested_targets[0]`), `sceneId/sceneName`은 같은 dataset의 scene JOIN으로 없으면 null, `classMode`(1/3/8)는 `mappingName`에서 계산한다. 새로고침 후 receipt 없이도 대상 문맥을 복원할 수 있다.
 404 job 없음. FAILED는 errorMessage 및 completedAt이 채워진다. DB 컬럼명은 `failure_reason`, 외부 필드는 `errorMessage`다.
+`errorCode`(V6, nullable): 실패 지점의 안정 식별자. `AI_ENDPOINT_UNSUPPORTED`(AI에 `/auto-label` 라우트 없음, HTTP 404), `AI_UNREACHABLE`(연결 거부·DNS·connect timeout), `AI_TIMEOUT`(응답 대기 초과), `AI_HTTP_ERROR`(AI 코드 없는 HTTP 오류), AI가 보낸 `VESPA_*`/`SCENE_NOT_FOUND`, `RESULT_VALIDATION_FAILED`(결과가 job·sample과 불일치), `RESULT_STORAGE_FAILED`(DB 저장 실패). V6 이전 행은 null이며 기존 message를 다시 해석하지 않는다. HTTP 502 자체를 모델 실패로 보지 않는다.
 job 생성과 sample snapshot은 한 transaction. worker가 PENDING을 claim하고 짧은 transaction으로 RUNNING을 저장한 다음 HTTP 호출한다. 프론트엔드는 2~5초 간격으로 조회하고 terminal 상태에서 중단한다. 최대 예상 대기시간은 배포 timeout에 맞춰 안내한다.
 
 ## 8. Auto Label Result / Artifact
@@ -155,17 +160,67 @@ job 생성과 sample snapshot은 한 transaction. worker가 PENDING을 claim하�
 404 job 없음,409 PENDING/RUNNING/FAILED. sampleTokens에 모든 처리 sample이 들어가며 box 없는 sample도 유지한다. boxes는 sampleToken,boxIndex 순서. 결과는 현재 전체 반환이므로 대규모 scene에는 pagination이 후속으로 필요하다.
 `detectionScore=1.0`은 VESPA 고정값이며 calibrated confidence가 아니다. velocity는 원본 변환 출력이며 GT sample_annotation에는 직접 대응 필드가 없다. tracking instanceToken, visibility, lidar/radar point counts는 예측에 존재하지 않는다.
 `predicted_annotation` + sample receipt + artifact + job COMPLETED를 같은 transaction으로 저장한다. 실패 시 전체 rollback 후 별도 transaction으로 FAILED 기록한다. DB 자체가 다운이면 FAILED 기록도 실패하므로 복구 작업이 필요하다.
-Artifact는 metadata만 제공한다. relativePath는 다운로드 URL이 아니다. 최종 JSON/Rerun artifact 다운로드 endpoint는 현재 없다. checksum은 FastAPI가 canonical JSON으로 계산한 값이며 파일 bytes SHA와 동일하다고 가정하지 않는다. NPZ는 DB 저장/REST 반환 대상이 아니다.
+Artifact는 metadata만 제공한다. relativePath는 다운로드 URL이 아니다. 최종 JSON artifact 다운로드 endpoint는 현재 없다. Rerun 파일은 artifact가 아니라 9장 recording API로 제공한다. checksum은 FastAPI가 canonical JSON으로 계산한 값이며 파일 bytes SHA와 동일하다고 가정하지 않는다. NPZ는 DB 저장/REST 반환 대상이 아니다.
 
-## 9. Enum / 상태
+## 9. Rerun Recording API
+
+상세 계약·버전·exporter 규칙: [Rerun recording 계약](docs/rerun-recording.md). recording 상태는 라벨 job 상태와 별개다.
+
+|Method|URL / path variable|Query / body|성공 Response|추가 오류|
+|---|---|---|---|---|
+|POST|`/api/scenes/{sceneId}/recordings` scene ID|없음 / 생략 또는 `{"jobId":12}`|202 새 생성, 200 재사용: `{recordingId,status,reused}`|400 잘못된 jobId,404 scene/job 없음,409 job이 다른 scene 대상 또는 COMPLETED 아님|
+|GET|`/api/scenes/{sceneId}/recordings` scene ID|없음 / 없음|`RecordingSummary[]` 최신순|404 scene 없음|
+|GET|`/api/recordings/{id}` recording ID|없음 / 없음|`Recording`|404|
+|GET|`/api/recordings/{id}/content` recording ID|없음 / 없음|`.rrd` bytes|404 없음/파일 없음,409 READY 아님|
+
+```json
+{"recordingId":5,"status":"PENDING","reused":false}
+```
+
+- 같은 dataset·scene·jobId(없으면 GT·점군만)·exportVersion의 FAILED가 아닌 recording이 있으면 재사용(200, 현재 status 반환). 최신이 FAILED면 같은 요청이 새 recording을 만든다(202). recording 재생성은 VESPA job을 다시 실행하지 않고 job 행을 바꾸지 않는다.
+- jobId는 같은 dataset의 job만 찾는다(다른 dataset은 404). 숫자가 아니면 `INVALID_REQUEST`, 0 이하면 `HTTP_400`.
+- Recording: `recordingId,datasetId,sceneId,sceneToken,sceneName,jobId,status,sdkVersion,exportVersion,coordinateFrame,applicationId,rerunRecordingId,timeline,timeTimeline,entities{lidar,ego,gt,prediction},samples[],contentUrl,sizeBytes,errorMessage,createdAt,startedAt,completedAt`. jobId nullable, coordinateFrame `WORLD`.
+- samples[]: `{index,sampleToken,timestampUs,lidarPoints,gtAnnotationIds[],predictionIds[]}`. Viewer `selection_change`의 entity_path가 `entities.gt`면 `gtAnnotationIds[instance_id]`가 GT annotation `id`, `entities.prediction`이면 `predictionIds[instance_id]`가 예측 box `id`다. 다른 sample의 같은 instance 번호는 같은 객체가 아니다.
+- READY 전에는 `applicationId,rerunRecordingId,timeline,timeTimeline,entities,contentUrl,sizeBytes`가 null이고 `samples`는 빈 배열이다. jobId 없는 recording은 `entities.prediction=null`. FAILED는 `errorMessage`(짧은 원인)를 채운다.
+- RecordingSummary: Recording에서 `samples` 필드를 뺀 형태.
+- Viewer 연결: `@rerun-io/web-viewer@0.38.1`은 `.rrd`로 끝나지 않는 HTTP URL을 recording으로 열지 않는다(`Failed to parse URL`, 2026-10-04 브라우저 확인). 프론트는 `contentUrl`을 fetch한 bytes를 `WebViewer.open_channel().send_rrd()`로 전달한다. contentUrl을 Viewer에 직접 넘기지 않는다.
+- content: `application/octet-stream`, `Content-Length`, `X-Content-Type-Options: nosniff`, `Range` 요청은 206. 파일은 `recording.root` 아래 상대 경로만 허용한다(절대 경로, `..`, root 밖 symlink 거부).
+- 생성 처리(2026-10-05): 같은 설정의 FAILED가 아닌 recording 재사용을 먼저 확인한다(AI 장애 중에도 200). 재사용 후보가 READY인데 recording root는 읽히고 파일만 없음이 확인되면 그 행을 `FAILED(RECORDING_FILE_MISSING)`로 조건부 전환하고 새로 만든다. 새 생성일 때만 recording 준비 검사 후 insert하며, 준비되지 않았으면 `503 {"code":"<reasonCode>"}`.
+- content: READY인데 파일 부재가 확인되면 `404 {"code":"RECORDING_FILE_MISSING"}`(행은 위와 같이 FAILED로 정정), recording root 자체를 읽을 수 없으면 `503 {"code":"RECORDING_STORAGE_UNAVAILABLE"}`(유실로 단정하지 않음), 허용 범위 밖 경로는 404.
+- `errorCode`(V6, nullable): `RECORDING_INVALID_RESULT`, `RECORDING_FILE_MISSING`, `DATA_NOT_READY`, AI가 보낸 `RECORDING_*`, `AI_ENDPOINT_UNSUPPORTED/AI_UNREACHABLE/AI_TIMEOUT/AI_HTTP_ERROR`, `RESULT_STORAGE_FAILED`.
+- Status: PENDING → RUNNING → READY 또는 FAILED. Spring worker가 짧은 transaction으로 claim하고 transaction 없이 AI `/recordings`를 동기 호출한 뒤, 응답의 recording_id·execution_token·sample 순서/개수·GT/예측 개수·SDK/export 버전·경로·파일 size/sha256을 검증해 READY로 저장한다. 프론트는 2~5초 간격 polling 후 READY/FAILED에서 중단한다.
+
+## 9-1. System Status API (2026-10-05)
+
+`GET /api/system/status?datasetId={id}&refresh=false` — 기능별 준비 상태. datasetId 선택 양수(0 이하 400, 없는 dataset 404), refresh 기본 false. 일부 기능 미지원도 200으로 표현한다. 상세 설계: [개선 기획서 7장](docs/frontend-integration-plan.md).
+
+```json
+{"schemaVersion":1,"instanceId":"<uuid>","checkedAt":"...",
+ "dataset":{"id":1,"version":"v1.0-mini","origin":"SYNTHETIC","metadataChecksum":"<64-hex>","mediaValidation":"PARTIAL"},
+ "capabilities":{"catalog":{"state":"READY","canExecute":true,"reasonCode":null,"message":null,"checkedAt":"...","expiresAt":"..."},
+  "media":{...},"search":{...},"vespa":{...,"executor":"local"},"recording":{...}}}
+```
+
+- `instanceId`: DB에 한 번 생성되는 공개 UUID(`system_instance`, 재시작해도 동일). 다른 DB의 같은 jobId를 구분하는 용도이며 비밀값이 아니다.
+- `dataset.origin`: SYNTHETIC/NUSCENES/UNKNOWN. importer가 `NUSCENES_DATA_ORIGIN` 설정을 import checksum과 함께 `dataset_provenance`에 기록한 경우에만 그 값을 쓰고, 기록이 없거나 checksum이 다르면 UNKNOWN. 이름·version·sample 수로 추정하지 않는다. 기존 명시 출처는 덮어쓰지 않고 UNKNOWN만 같은 checksum에서 갱신한다.
+- `mediaValidation`: NOT_CHECKED/PARTIAL/VERIFIED/FAILED. PARTIAL은 import 때 모든 sample_data/map 파일 경로 존재를 확인했다는 뜻이며 내용 검증이 아니다.
+- `state`: READY(가벼운 필수 검사 통과, 실제 추론 성공 보장 아님)·CONFIGURED(설정만 확인)·UNAVAILABLE(미지원/누락/실패)·UNKNOWN(AI 연결 실패·timeout 등). 작업 시작 가능 여부는 `canExecute`만 본다. reasonCode 예: `MEDIA_NOT_FULLY_VALIDATED`, `MEDIA_FILES_MISSING`, `MEDIA_ROOT_UNAVAILABLE`, `EMBEDDINGS_NOT_READY`, `MODEL_NOT_READY`, `CLIP_NOT_DEPLOYED`, `MODEL_MISMATCH`, `EXECUTOR_NOT_CHECKED`, `VESPA_NOT_CONFIGURED`, `VESPA_RUNTIME_NOT_READY`, `VESPA_REMOTE_UNREACHABLE`, `VESPA_REMOTE_NOT_READY`, `SYNTHETIC_DATASET`, `DATASET_MISMATCH`, `LEGACY_NOT_VERIFIED`, `AI_UNREACHABLE`, `AI_TIMEOUT`, `AI_ENDPOINT_UNSUPPORTED`, `AI_HTTP_ERROR`, `RECORDING_SDK_MISMATCH`, `RECORDING_STORAGE_UNAVAILABLE`. message는 한국어 안내.
+- media: 첫 sample의 keyframe 파일만 확인하는 표본 검사(READY는 VERIFIED provenance일 때만). search: AI CLIP READY + model/preprocess 일치 + 선택 dataset의 해당 model/preprocess embedding 1개 이상(전체 coverage 검증 아님). vespa: worker 설정, SYNTHETIC 차단, Spring 설정 version·AI datasetVersion/metadataChecksum 일치, AI READY 만료 전. recording: worker 설정, recording root 읽기, AI recording READY + SDK 0.38.1.
+- 이전 AI(`/capabilities` 404)는 `/health`로 읽는다. configured는 READY로 올리지 않고 `LEGACY_NOT_VERIFIED`(CONFIGURED, canExecute=false)로 둔다. AI 연결 실패는 UNKNOWN이며 mock으로 대체하지 않는다.
+- AI 응답은 Spring에서 15초 캐시(`system-status.ai-cache`), 동시에 하나만 조회한다. `refresh=true`는 AI에 읽기 전용 재확인을 요청하며 추론·sbatch·embedding 생성·import를 실행하지 않는다. 실패한 refresh가 이전 READY를 대체한다.
+
+## 10. Enum / 상태
 
 - Job status: PENDING → RUNNING → COMPLETED 또는 FAILED. claim 전 실패도 DB schema상 가능하다.
 - ClassMode: 1 (`vehicle`), 3 (`vehicle,pedestrian,bicycle`), 8 (`car,truck,bus,trailer,construction_vehicle,pedestrian,motorcycle,bicycle`).
 - mappingName: 1class/3class/8class. coordinateFrame: WORLD. scoreType: VESPA_CONSTANT (현재 wrapper).
 - ArtifactType: FINAL_JSON/RERUN/OTHER (현재 저장 경로는 FINAL_JSON만 생성).
 - Embedding status: STORED/SKIPPED.
+- Recording status: PENDING → RUNNING → READY 또는 FAILED. job status와 별개다.
 
-## 10. 내부 FastAPI 계약 / Health
+## 11. 내부 FastAPI 계약 / Health
+
+추가(2026-10-05): `GET /livez`(프로세스 생존만), `GET /capabilities?refresh=false`(clip/vespa/recording의 state·reasonCode·modelName/preprocess·executor·datasetVersion·metadataChecksum·sdkVersion·checkedAt/expiresAt). refresh=true일 때만 VESPA 확인: local은 `VESPA_PYTHON`으로 entry module import, ssh는 원격 `test -f`/`command -v sbatch squeue`만 실행(시간 상한, 단일 실행, 결과 만료 기본 600초). CLIP 로딩 실패는 서버를 종료하지 않고 CLIP만 UNAVAILABLE(`CLIP_LOAD_FAILED`)로 둔다; `/health`는 기존처럼 503. 이전 fail-fast 동작은 `AI_REQUIRE_CLIP=true`.
 
 프론트엔드에서 직접 호출하지 않는다. `/docs`, `/openapi.json`으로 Pydantic 계약 확인 가능.
 
@@ -175,13 +230,14 @@ Artifact는 metadata만 제공한다. relativePath는 다운로드 URL이 아니
 |POST|`/embedding/text`|`{"text":"rainy night road"}`|200 `{model_name,dimension:768,embedding:[...],preprocess:"clip-text-tokenizer"}`|422 입력,503 미준비,500 inference|
 |POST|`/embedding/image`|`{"image_path":"samples/CAM_FRONT/example.jpg","preprocess":"lr-square-crop-mean"}`|200 같은 embedding 구조|422 입력,404 파일 없음,400 잘못된 경로/이미지,503 미준비,500 inference|
 |POST|`/auto-label`|`{"scene_name":"scene-0061","class_mode":8,"job_id":12,"execution_token":"UUID"}`|200 아래 구조|422 입력,404 scene 없음,409 실행 중,503 미설정/실행불가,502 실행/출력 오류,504 timeout|
+|POST|`/recordings`|Spring이 DB에서 만든 scene sample·LIDAR_TOP·pose·calibration·GT·예측 (snake_case)|200 파일 경로·checksum·timeline·entity·sample별 개수|422 입력,404 lidar 파일 없음,503 SDK/설정 없음,502 exporter 실패,504 timeout|
 
 AI 요청에는 path/query 변수가 없다. image 파일 upload는 현재 지원하지 않고 상대 경로 JSON만 받는다. image preprocess 대안 `openclip-eval-224-centercrop`도 AI는 지원하지만 Spring 기본 저장/검색 정책은 lr-square-crop-mean이다.
 Auto-label job_id/execution_token은 둘 다 생략하거나 둘 다 제공하며 Spring은 항상 제공한다. 응답: `run_id,scene_name,class_mode,job_id,execution_token,mapping_name,split,coordinate_frame,score_type,meta,results,artifact_path,result_checksum`. results는 `{sample_token:[{sample_token,translation:[x,y,z],size:[w,l,h],rotation:[w,x,y,z],velocity:[vx,vy],detection_name,detection_score,attribute_name}]}`.
-AI 업무 오류는 `{"detail":{"code":"...","message":"..."}}`, Pydantic 422는 detail 배열이다. Spring이 이를 그대로 프론트에 중계하지 않는다.
+`/recordings` 요청/응답 필드는 [Rerun recording 계약](docs/rerun-recording.md) 4장. AI 업무 오류는 `{"detail":{"code":"...","message":"..."}}`, Pydantic 422는 detail 배열이다. Spring이 이를 그대로 프론트에 중계하지 않는다.
 `health.inference.vespa=configured`는 경로/파일 설정 검사이고 모델 실행 성공 보장이 아니다. Spring 별도 health endpoint는 현재 없다. 단순 접근 확인은 GET /api/datasets를 사용한다.
 
-## 11. 프론트엔드 호출 순서
+## 12. 프론트엔드 호출 순서
 
 1. GET /api/datasets → dataset ID 확보.
 2. 목록 탐색은 dataset scenes → scene samples → sample detail → camera contentUrl.
@@ -191,10 +247,12 @@ AI 업무 오류는 `{"detail":{"code":"...","message":"..."}}`, Pydantic 422는
 6. GET /api/auto-label/jobs/{id} polling. FAILED는 errorMessage 표시, COMPLETED일 때 /results 호출.
 7. results.sampleTokens와 scene sample 목록의 token을 연결해 sample ID를 구하고 /api/samples/{id}/annotations로 GT를 읽는다.
 8. 같은 world 좌표계에서 GT/예측을 비교한다. 카메라 투영 시 world→ego→sensor 역변환과 intrinsic 적용이 필요하다.
+9. 3D는 GET /api/scenes/{sceneId}/recordings로 기존 recording을 찾고, 없거나 FAILED뿐이면 POST(필요 시 COMPLETED jobId) → GET /api/recordings/{id} polling → READY의 contentUrl을 Web Viewer에 연다.
 
-## 12. 운영 제약 / 실행 / 검증
+## 13. 운영 제약 / 실행 / 검증
 
 - MVP는 Spring DB polling worker + FastAPI sync subprocess. VESPA 프로세스 timeout 7200초, Spring read timeout7300초, connect5초. CLIP read timeout30초. timeout 설정은 Spring이 VESPA보다 충분히 길어야 한다.
+- Recording: Spring read timeout `recording.read-timeout`(기본 660s, exporter 600s보다 길게), 파일 root `recording.root`(기본 `/recordings`), 기대 SDK `recording.sdk-version`(0.38.1), `recording.export-version`(ds2l-rrd-v1). RUNNING 도중 종료 복구는 job과 같이 없다.
 - FastAPI `--workers 1`, Spring worker 한 인스턴스를 권장한다. VESPA lock은 프로세스별이다. 여러 Spring worker를 동시에 돌리면 AI busy409로 job FAILED가 될 수 있다.
 - RUNNING 도중 Spring 종료/네트워크 단절 후 자동 lease 복구, retry queue, 취소 API는 없다. 운영 전 복구 정책이 필요하다. 결과를 받지 못해 FAILED여도 AI 파일이 남을 수 있다.
 - VESPA 원본 main의 부분 scene 출력 제한을 외부 vespa_runner.py에서 우회하고 원본 writer 변환 함수를 재사용한다. 원본 저장소는 수정하지 않는다. 자세한 설정은 [VESPA wrapper](ai-server/VESPA.md).

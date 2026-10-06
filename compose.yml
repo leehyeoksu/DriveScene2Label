@@ -7,8 +7,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-drivescene}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     # Loopback only: for scripts/embed.sh, which runs on the host (venv) to use the local GPU.
+    # A second Compose project (-p) must also set DB_PORT/APP_PORT/AI_PORT; the project name alone does not move ports.
     ports:
-      - "127.0.0.1:55433:5432"
+      - "127.0.0.1:${DB_PORT:-55433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -23,8 +24,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # Catalog/camera/GT do not need a healthy CLIP; feature readiness comes from /api/system/status.
       ai-server:
-        condition: service_healthy
+        condition: service_started
     environment:
       DB_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:-drivescene}
       DB_USERNAME: ${POSTGRES_USER:-drivescene}
@@ -34,6 +36,7 @@ services:
       NUSCENES_ROOT: /data/nuscenes
       NUSCENES_VERSION: ${NUSCENES_VERSION:-v1.0-mini}
       NUSCENES_IMPORT_ENABLED: ${NUSCENES_IMPORT_ENABLED:-false}
+      NUSCENES_DATA_ORIGIN: ${NUSCENES_DATA_ORIGIN:-UNKNOWN}
       AI_SERVER_BASE_URL: http://ai-server:8000
       AI_SERVER_READ_TIMEOUT: ${AI_SERVER_READ_TIMEOUT:-30s}
       VESPA_DATASET_VERSION: ${NUSCENES_VERSION:-v1.0-mini}
@@ -41,6 +44,9 @@ services:
       AUTO_LABEL_WORKER_ENABLED: ${AUTO_LABEL_WORKER_ENABLED:-true}
       VESPA_MODEL_VERSION: ${VESPA_MODEL_VERSION:-acb2b6e8683363795528f049fe0444ef9f3efdb9}
       VESPA_ARTIFACT_STORAGE_KEY: ${VESPA_ARTIFACT_STORAGE_KEY:-vespa-results}
+      RECORDING_ROOT: /recordings
+      RECORDING_WORKER_ENABLED: ${RECORDING_WORKER_ENABLED:-true}
+      RECORDING_READ_TIMEOUT: ${RECORDING_READ_TIMEOUT:-660s}
     ports:
       - "127.0.0.1:${APP_PORT:-8080}:8080"
     volumes:
@@ -50,6 +56,11 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # Rerun .rrd files written by ai-server; Spring only serves them.
+      - type: volume
+        source: rerun_recordings
+        target: /recordings
+        read_only: true
 
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/datasets"]
@@ -66,6 +77,7 @@ services:
       VESPA_DATASET_VERSION: ${NUSCENES_VERSION:-v1.0-mini}
       VESPA_NUM_THREADS: ${VESPA_NUM_THREADS:-1}
       VESPA_TIMEOUT_SECONDS: ${VESPA_TIMEOUT_SECONDS:-7200}
+      RECORDING_TIMEOUT_SECONDS: ${RECORDING_TIMEOUT_SECONDS:-600}
     ports:
       - "127.0.0.1:${AI_PORT:-8000}:8000"
     volumes:
@@ -77,9 +89,11 @@ services:
           create_host_path: false
       - model_cache:/models
       - vespa_results:/results
+      - rerun_recordings:/recordings
     shm_size: 2gb
 
 volumes:
   model_cache:
   vespa_results:
   postgres_data:
+  rerun_recordings:

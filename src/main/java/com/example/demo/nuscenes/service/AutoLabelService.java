@@ -12,36 +12,45 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class AutoLabelService {
  private final AutoLabelRepository repo;
+ private final SystemStatusService readiness;
  private final ObjectMapper json;
  private final TransactionTemplate tx;
  private final String version,modelVersion,storage;
- public AutoLabelService(AutoLabelRepository repo,ObjectMapper json,PlatformTransactionManager manager,
+ public AutoLabelService(AutoLabelRepository repo,SystemStatusService readiness,ObjectMapper json,PlatformTransactionManager manager,
   @Value("${auto-label.dataset-version:v1.0-trainval}") String version,
   @Value("${auto-label.model-version:acb2b6e8683363795528f049fe0444ef9f3efdb9}") String modelVersion,
   @Value("${auto-label.artifact-storage-key:vespa-results}") String storage) {
-  this.repo=repo;this.json=json;this.tx=new TransactionTemplate(manager);this.version=version;this.modelVersion=modelVersion;this.storage=storage;
+  this.repo=repo;this.readiness=readiness;this.json=json;this.tx=new TransactionTemplate(manager);this.version=version;this.modelVersion=modelVersion;this.storage=storage;
  }
  public Created create(CreateRequest request,String key) {
   if(!Set.of(1,3,8).contains(request.classMode()) || (request.datasetId()!=null && request.datasetId()<=0)) throw bad("Invalid classMode/datasetId");
   String requestKey=key==null?UUID.randomUUID().toString():key.strip();
   if(requestKey.isEmpty() || requestKey.length()>200) throw bad("Idempotency-Key must be 1..200 characters");
-  return tx.execute(status->{
+  // 1) Resolve the target and replay an existing job for this key first: works even while the AI is down.
+  var target=tx.execute(status->{
    var targets=repo.targets(request.sceneToken(),request.datasetId());
    if(targets.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Scene not found");
    if(targets.size()!=1) throw new ResponseStatusException(HttpStatus.CONFLICT,"Specify datasetId for this scene token");
-   var target=targets.getFirst();
-   if(!version.equals(target.version())) throw bad("Dataset version must match the configured VESPA dataset");
+   return targets.getFirst();
+  });
+  var replay=tx.execute(status->repo.findExisting(target.datasetId(),requestKey).map(old->replay(old,target,request)));
+  if(replay!=null && replay.isPresent()) return replay.get();
+  if(!version.equals(target.version())) throw bad("Dataset version must match the configured VESPA dataset");
+  // 2) New job only: the server checks VESPA readiness itself, outside any DB transaction.
+  readiness.requireVespa(target.datasetId());
+  // 3) Insert; a concurrent request with the same key falls back to replay.
+  return tx.execute(status->{
    var samples=repo.sceneSamples(target); if(samples.isEmpty()) throw bad("Scene has no samples");
    var inserted=repo.insert(target,requestKey,request.classMode(),json.writeValueAsString(classes(request.classMode())),modelVersion,
       json.writeValueAsString(Map.of("dataset_version",version,"config_name","configs/vlm/p_final.yaml")));
-   if(inserted.isEmpty()) {
-    var old=repo.existing(target.datasetId(),requestKey);
-    if(!old.sceneToken().equals(target.token()) || !old.mappingName().equals(request.classMode()+"class")) throw new ResponseStatusException(HttpStatus.CONFLICT,"Idempotency key refers to another request");
-    return new Created(old.id(),repo.status(old.id()).orElseThrow().status());
-   }
+   if(inserted.isEmpty()) return replay(repo.existing(target.datasetId(),requestKey),target,request);
    long job=inserted.get(); for(String token:samples) repo.target(job,target.datasetId(),token);
    return new Created(job,"PENDING");
   });
+ }
+ private Created replay(AutoLabelRepository.Existing old,AutoLabelRepository.Target target,CreateRequest request) {
+  if(!old.sceneToken().equals(target.token()) || !old.mappingName().equals(request.classMode()+"class")) throw new ResponseStatusException(HttpStatus.CONFLICT,"Idempotency key refers to another request");
+  return new Created(old.id(),repo.status(old.id()).orElseThrow().status());
  }
  public Optional<Work> claim() { return tx.execute(s->repo.claim()); }
  public JobStatus status(long id) { return repo.status(id).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Job not found")); }
@@ -61,7 +70,7 @@ public class AutoLabelService {
    repo.complete(job,result,storage);
   });
  }
- public void fail(Work job,String reason) { tx.executeWithoutResult(s->repo.fail(job,reason)); }
+ public void fail(Work job,String code,String reason) { tx.executeWithoutResult(s->repo.fail(job,code,reason)); }
  private void validate(Work job,AiResponse r,Set<String> samples) {
   if(r==null || r.jobId()==null || r.jobId()!=job.id() || !job.executionToken().equals(r.executionToken())
     || !job.sceneName().equals(r.sceneName()) || !job.mappingName().equals(r.mappingName()) || r.classMode()!=Integer.parseInt(job.mappingName().replace("class",""))

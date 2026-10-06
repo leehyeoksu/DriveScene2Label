@@ -14,7 +14,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest(properties={
- "auto-label.worker.enabled=false",
+ "auto-label.worker.enabled=false","recording.worker.enabled=false",
  "spring.datasource.url=${TEST_DB_URL:jdbc:postgresql://localhost:55432/drivescene_test}",
  "spring.datasource.username=${TEST_DB_USERNAME:drivescene}",
  "spring.datasource.password=${TEST_DB_PASSWORD:}",
@@ -85,11 +85,33 @@ class DemoApplicationTests {
   mvc.perform(get("/api/datasets/{id}/stats",dataset)).andExpect(status().isOk()).andExpect(jsonPath("$.sensorFiles").value(7));
   mvc.perform(get("/api/samples/{id}",sample.id())).andExpect(status().isOk())
    .andExpect(jsonPath("$.sensorFiles.length()").value(7)).andExpect(jsonPath("$.maps[0].location").value("test-location"));
-  mvc.perform(get("/api/samples/{id}/annotations",sample.id())).andExpect(status().isOk()).andExpect(jsonPath("$[0].sizeW").value(2.0));
+  mvc.perform(get("/api/samples/{id}/annotations",sample.id())).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1))
+   .andExpect(jsonPath("$[0].sizeW").value(2.0)).andExpect(jsonPath("$[0].sizeL").value(4.0)).andExpect(jsonPath("$[0].token").value("box-1"))
+   .andExpect(jsonPath("$[0].instanceToken").value("instance-1")).andExpect(jsonPath("$[0].numLidarPts").value(10)).andExpect(jsonPath("$[0].datasetId").value(dataset))
+   .andExpect(jsonPath("$[0].categoryToken").value("category-1")).andExpect(jsonPath("$[0].categoryName").value("vehicle.car"));
   long file=jdbc.sql("SELECT id FROM sample_data WHERE dataset_id=:id AND token='file-0'").param("id",dataset).query(Long.class).single();
   mvc.perform(get("/api/sensor-files/{id}/content",file)).andExpect(status().isOk()).andExpect(content().contentType("image/jpeg")).andExpect(content().string("synthetic-fixture"));
   mvc.perform(get("/api/sensor-files/{id}/calibration",file)).andExpect(status().isOk()).andExpect(jsonPath("$.intrinsic00").value(1000.0));
   mvc.perform(get("/api/sensor-files/{id}/pose",file)).andExpect(status().isOk()).andExpect(jsonPath("$.translationX").value(100.0));
+ }
+ @Test void gtCategoryIsResolvedWithinEachDataset() throws Exception {
+  long first=importer.importDataset("v1.0-mini").datasetId();
+  // Second dataset reuses every token but names category-1 differently; a JOIN without dataset_id would mix them.
+  long second=jdbc.sql("INSERT INTO dataset(name,version,storage_key,root_relative_path,source_checksum) VALUES('category-isolation','v1.0-mini','local','.','test') RETURNING id").query(Long.class).single();
+  jdbc.sql("INSERT INTO capture_log(dataset_id,token,logfile,location,date_captured,vehicle,raw_payload) VALUES(:d,'log-1','x','x','x','x','{}')").param("d",second).update();
+  jdbc.sql("INSERT INTO scene(dataset_id,token,log_token,name,description,nbr_samples,first_sample_token,last_sample_token,raw_payload) VALUES(:d,'scene-1','log-1','scene-test','x',1,'sample-1','sample-1','{}')").param("d",second).update();
+  jdbc.sql("INSERT INTO sample(dataset_id,token,scene_token,timestamp_us,raw_payload) VALUES(:d,'sample-1','scene-1',1,'{}')").param("d",second).update();
+  jdbc.sql("INSERT INTO category(dataset_id,token,name,description,raw_payload) VALUES(:d,'category-1','human.pedestrian.adult','x','{}')").param("d",second).update();
+  jdbc.sql("INSERT INTO object_instance(dataset_id,token,category_token,nbr_annotations,first_annotation_token,last_annotation_token,raw_payload) VALUES(:d,'instance-1','category-1',1,'box-1','box-1','{}')").param("d",second).update();
+  jdbc.sql("""
+   INSERT INTO gt_annotation(dataset_id,token,sample_token,instance_token,center_x,center_y,center_z,size_w,size_l,size_h,rotation_w,rotation_x,rotation_y,rotation_z,num_lidar_pts,num_radar_pts,raw_payload)
+   VALUES(:d,'box-1','sample-1','instance-1',0,0,0,1,1,1,1,0,0,0,0,0,'{}')""").param("d",second).update();
+  for(long dataset:new long[]{first,second}) {
+   long sample=jdbc.sql("SELECT id FROM sample WHERE dataset_id=:d AND token='sample-1'").param("d",dataset).query(Long.class).single();
+   mvc.perform(get("/api/samples/{id}/annotations",sample)).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1))
+    .andExpect(jsonPath("$[0].datasetId").value(dataset)).andExpect(jsonPath("$[0].categoryToken").value("category-1"))
+    .andExpect(jsonPath("$[0].categoryName").value(dataset==first?"vehicle.car":"human.pedestrian.adult"));
+  }
  }
  @Test void missingRecordsAndInvalidPaginationReturnClientErrors() throws Exception {
   mvc.perform(get("/api/samples/9223372036854775807")).andExpect(status().isNotFound());

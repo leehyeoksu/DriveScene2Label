@@ -8,3 +8,5 @@ torchvision==0.29.1
 open_clip_torch==3.3.0
 numpy==2.5.3
 pillow==12.3.0
+# Rerun .rrd exporter only; must equal @rerun-io/web-viewer. VESPA env keeps its own 0.21.0.
+rerun-sdk==0.38.1

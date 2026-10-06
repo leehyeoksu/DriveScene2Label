@@ -134,7 +134,7 @@ bash scripts/embed.sh             # 임베딩 계산·저장 (.venv 생성은 �
 bash scripts/embed.sh --search "rainy night intersection" --open   # 텍스트로 확인, 결과 사진을 브라우저로
 ```
 
-- `embed.sh`는 `.env`에서 DB 이름·사용자·비밀번호(`POSTGRES_*`)와 데이터 경로(`NUSCENES_HOST_PATH`)를 읽습니다. 다른 파일을 쓰려면 `ENV_FILE=경로 bash scripts/embed.sh`. 데이터 경로는 `NUSCENES_ROOT` → `NUSCENES_HOST_PATH` → `./v1.0-mini` 순서로 찾습니다.
+- `embed.sh`는 `.env`에서 DB 이름·사용자·비밀번호(`POSTGRES_*`)와 데이터 경로(`NUSCENES_HOST_PATH`)를 읽습니다. 다른 파일을 쓰려면 `ENV_FILE=경로 bash scripts/embed.sh`. 데이터 경로는 `NUSCENES_ROOT` → `NUSCENES_HOST_PATH` → `./v1.0-mini` 순서로 찾습니다. DB 호스트 포트는 Compose와 같은 우선순위로 정합니다: 실행할 때 지정한 `DB_PORT` → 선택한 env 파일의 `DB_PORT` → 기본 55433(2026-10-06). 실제 데이터용 별도 project는 [Docker 통합](docker-integration.md#별도-compose-project-포트-분리-2026-10-06)의 방법으로 전용 env 파일을 쓰는 것을 권장합니다.
 - 최초 실행 시 `.venv`에 `embedding/requirements.txt`(버전 고정)를 설치하고, 첫 임베딩에서 CLIP 가중치(약 1.7GB)를 `~/.cache/huggingface`에 받습니다. Python 3.12·3.14에서 확인했습니다. 다른 인터프리터는 `PYTHON=python3.12 bash scripts/embed.sh`.
 - 디바이스는 cuda → mps → cpu 순서로 자동 선택하고, 시작할 때 `Device: mps (auto; arm64; torch 2.14.1)`처럼 출력합니다. `--device cpu|mps|cuda`로 강제할 수 있으며, 없는 디바이스를 지정하면 바로 종료합니다.
 - 기본 전처리는 `lr-square-crop-mean`입니다. 16:9 이미지에서 왼쪽·오른쪽 h×h 정사각형을 각각 임베딩해 평균합니다. 기존 `openclip-eval-224-centercrop`(가운데 한 장)보다 v1.0-mini 밤/낮 검색 mAP가 0.915 → 0.946로 높아 기본값으로 정했습니다. Spring의 기본값은 `application.properties`의 `embedding.preprocess`입니다.

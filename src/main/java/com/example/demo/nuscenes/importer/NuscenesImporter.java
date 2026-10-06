@@ -9,6 +9,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -22,8 +23,12 @@ public class NuscenesImporter {
  private final NamedParameterJdbcTemplate jdbc;
  private final ObjectMapper mapper;
  private final DatasetFiles files;
- public NuscenesImporter(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, DatasetFiles files) {
+ private final String origin;
+ public NuscenesImporter(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, DatasetFiles files,
+   @Value("${nuscenes.data-origin:UNKNOWN}") String origin) {
   this.jdbc = jdbc; this.mapper = mapper; this.files = files;
+  this.origin = origin == null ? "UNKNOWN" : origin.strip().toUpperCase(Locale.ROOT);
+  if (!Set.of("SYNTHETIC", "NUSCENES", "UNKNOWN").contains(this.origin)) throw new IllegalArgumentException("nuscenes.data-origin must be SYNTHETIC, NUSCENES or UNKNOWN");
  }
  public record ImportResult(long datasetId, Map<String, Integer> sourceCounts, int skippedMapLogLinks) {}
 
@@ -89,8 +94,23 @@ public class NuscenesImporter {
    if (links.size() == 500) { insertAttributeLinks(links); links.clear(); }
   }
   if (!links.isEmpty()) insertAttributeLinks(links);
+  recordProvenance(datasetId, checksum);
   log.info("nuScenes import complete: dataset={}, skipped map links outside this subset={}", datasetId, skipped);
   return new ImportResult(datasetId, counts, skipped);
+ }
+ /**
+  * Origin comes only from the explicit nuscenes.data-origin setting and is bound to the checksum just verified.
+  * Every sample_data/map path was resolved above, so media_validation is PARTIAL (existence, not content).
+  * An existing explicit origin is never overwritten; only an UNKNOWN row with the same checksum is upgraded.
+  */
+ private void recordProvenance(long datasetId, String checksum) {
+  int changed = jdbc.update("""
+    INSERT INTO dataset_provenance(dataset_id, origin, metadata_checksum, media_validation, recorded_by, validated_at)
+    VALUES (:d, :o, :c, 'PARTIAL', 'importer', now())
+    ON CONFLICT(dataset_id) DO UPDATE SET origin = EXCLUDED.origin, recorded_at = now()
+    WHERE dataset_provenance.origin = 'UNKNOWN' AND dataset_provenance.metadata_checksum = EXCLUDED.metadata_checksum
+    """, new MapSqlParameterSource("d", datasetId).addValue("o", origin).addValue("c", checksum));
+  if (changed == 0) log.info("Dataset {} provenance kept as recorded (configured origin {})", datasetId, origin);
  }
  private void insertAttributeLinks(List<MapSqlParameterSource> links) {
   jdbc.batchUpdate("INSERT INTO annotation_attribute(dataset_id, annotation_token, attribute_token) VALUES (:d, :a, :t) ON CONFLICT DO NOTHING", links.toArray(MapSqlParameterSource[]::new));

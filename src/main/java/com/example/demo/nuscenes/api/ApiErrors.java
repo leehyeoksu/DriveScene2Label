@@ -7,6 +7,8 @@ public class ApiErrors {
  public record Error(String code,String message) {}
  @ExceptionHandler(ResponseStatusException.class)
  public ResponseEntity<Error> status(ResponseStatusException e) { return ResponseEntity.status(e.getStatusCode()).body(new Error("HTTP_"+e.getStatusCode().value(),e.getReason()==null?"Request failed":e.getReason())); }
+ @ExceptionHandler(CodedError.class)
+ public ResponseEntity<Error> coded(CodedError e) { return ResponseEntity.status(e.status()).body(new Error(e.code(),e.getMessage())); }
  @ExceptionHandler({org.springframework.web.bind.MethodArgumentNotValidException.class,org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class,org.springframework.web.bind.MissingServletRequestParameterException.class,org.springframework.http.converter.HttpMessageNotReadableException.class})
  public ResponseEntity<Error> invalid(Exception e) { return ResponseEntity.badRequest().body(new Error("INVALID_REQUEST","Check required fields and parameter types")); }
  @ExceptionHandler({org.springframework.dao.DataAccessException.class,org.springframework.transaction.TransactionException.class})
